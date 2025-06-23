@@ -936,7 +936,7 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                 cell.width = Inches(width * page_width / total_width)
 
         # Add headers
-        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Product Type', 'Accepted Date']
+        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Accepted Date']
         for i, header in enumerate(headers):
             cell = table.cell(0, i)
             paragraph = cell.paragraphs[0]
