@@ -958,7 +958,7 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                 table.autofit = False  # Keep autofit false for manual width control
 
                 # Set column widths proportionally for better fit
-                widths = [6, 3, 0.5, 1, 1, 1.5]  # Adjusted widths - first two columns wider, others narrower
+                widths = [5, 2, 0.75, 1.5, 1.5, 1.75]  # Adjusted widths for better proportions
                 total_width = sum(widths)
                 page_width = 10  # Actual usable width after margins
 
@@ -988,14 +988,15 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                     run.bold = True
                     run.font.size = Pt(11)
 
-                data = [
-                    str(row.get('Product Name*', ''))[:150],    # Increased length for product name
-                    str(row.get('Barcode*', ''))[:75],          # Increased length for barcode
-                    str(row.get('Quantity Received*', ''))[:5],  # Shortened for quantity
-                    str(row.get('Vendor', ''))[:25],            # Shortened for vendor
-                    str(row.get('Product Type*', ''))[:25],     # Shortened for product type
-                    str(row.get('Accepted Date', ''))[:10]      # Shortened for date
-                ]
+            row_cells = table.add_row().cells
+            data = [
+                str(row.get('Product Name*', ''))[:100],
+                str(row.get('Barcode*', ''))[:50],
+                str(row.get('Quantity Received*', ''))[:5],
+                str(row.get('Vendor', ''))[:20],
+                str(row.get('Product Type*', ''))[:50],
+                str(row.get('Accepted Date', ''))[:10]
+            ]
             
             for i, value in enumerate(data):
                 paragraph = row_cells[i].paragraphs[0]
