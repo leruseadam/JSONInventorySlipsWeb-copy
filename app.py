@@ -956,7 +956,11 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                 table.style = 'Table Grid'
                 table.autofit = False
                 
-                # Set column widths for new table
+                # Set column widths proportionally
+                widths = [4.5, 2, 0.75, 2, 2, 1.75]  # Adjusted widths - reduced quantity column to 0.75
+                total_width = sum(widths)
+                page_width = 10  # Actual usable width after margins
+
                 for i, width in enumerate(widths):
                     for cell in table.columns[i].cells:
                         cell.width = Inches(width * page_width / total_width)
