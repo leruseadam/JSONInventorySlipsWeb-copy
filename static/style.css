@@ -24,6 +24,11 @@ body {
     padding: 16px 20px;
 }
 
+.card-header h5 {
+    font-size: 1.2rem; /* Adjust the size as needed */
+    font-weight: 500; /* Optional: Adjust the weight for better readability */
+}
+
 .card-body {
     padding: 20px;
     color: #f1f3f6;
@@ -35,7 +40,7 @@ body {
     color: #fff !important;
     font-weight: 500;
     margin-bottom: 6px;
-    font-size: 2em;
+    font-size: 1.5em;
 }
 
 .form-control, .form-select, textarea {
@@ -217,4 +222,64 @@ textarea::placeholder {
 .input-group .form-control {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+}
+
+/* Muted text color */
+.text-muted {
+    color: white !important;
+}
+
+/* Center the containers and ensure equal width */
+.data-view .container {
+    display: flex;
+    justify-content: center; /* Center the containers horizontally */
+    align-items: center; /* Center the containers vertically */
+    flex-direction: column; /* Stack rows vertically */
+}
+
+.data-view .row {
+    display: flex;
+    justify-content: center; /* Center the row horizontally */
+    gap: 20px; /* Add spacing between columns */
+}
+
+.data-view .col-md-6 {
+    flex: 1; /* Make both columns take equal space */
+    max-width: 100%; /* Ensure equal width */
+}
+
+/* Shrink the JSON and CSV containers in Data View */
+.data-view .col-md-6 .card {
+    height: 150px; /* Set a shorter height for JSON and CSV cards */
+    width: 120%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between; /* Ensure content is spaced properly */
+}
+
+/* Ensure equal width for JSON and CSV containers */
+.data-view .col-md-6 {
+    flex: 1; /* Make both columns take equal space */
+    max-width: 100%; /* Ensure equal width */
+}
+
+/* Ensure equal height for both containers */
+.data-view .col-md-6 {
+    display: flex;
+    align-items: stretch;
+}
+
+.data-view .card-body {
+    font-size: 0.9rem; /* Optional: Shrink text size inside the cards */
+}
+
+/* Ensure the table is scrollable and not cutoff */
+.data-view .card-body {
+    max-height: 800px; /* Increase height to make the container taller */
+    overflow-y: auto; /* Add vertical scrolling */
+}
+
+/* Optional: Add padding to the table for better visibility */
+.table-responsive {
+    padding: 10px;
 }

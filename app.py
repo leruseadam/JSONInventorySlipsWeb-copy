@@ -7,7 +7,6 @@ from CSV and JSON data with support for Bamboo and Cultivera formats.
 import os
 import sys
 import json
-import datetime
 import socket
 import ssl
 import base64
@@ -25,6 +24,8 @@ import time
 from functools import wraps
 from io import BytesIO
 import zlib
+from pathlib import Path
+from datetime import datetime
 
 # Third-party imports
 from flask import (
@@ -216,26 +217,48 @@ def adjust_table_font_sizes(doc_path):
                 return size
         return 7  # Fallback
 
-    doc = Document(doc_path)
+    try:
+        doc = Document(doc_path)
 
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    text = paragraph.text.strip()
-                    if not text:
-                        continue
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        text = paragraph.text.strip()
+                        if not text:
+                            continue
 
-                    # If line is Product Name (first line), force 10pt
-                    if paragraph == cell.paragraphs[0]:
-                        font_size = 10
-                    else:
-                        font_size = get_font_size(len(text))
+                        # If line is Product Name (first line), force 10pt
+                        if paragraph == cell.paragraphs[0]:
+                            font_size = 10
+                        else:
+                            font_size = get_font_size(len(text))
 
-                    for run in paragraph.runs:
-                        run.font.size = Pt(font_size)
+                        for run in paragraph.runs:
+                            try:
+                                run.font.size = Pt(font_size)
+                            except Exception as e:
+                                logger.warning(f"Could not set font size for run: {e}")
+                                continue
 
-    doc.save(doc_path)
+        # Save to a temporary file first
+        temp_path = doc_path + ".font_adjust.tmp"
+        doc.save(temp_path)
+        
+        # Validate the document after font adjustments
+        if validate_docx(temp_path):
+            import shutil
+            shutil.move(temp_path, doc_path)
+        else:
+            logger.warning("Document validation failed after font adjustment, keeping original")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
+    except Exception as e:
+        logger.error(f"Error adjusting font sizes: {str(e)}")
+        # If font adjustment fails, the document should still be usable
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 # Open files after saving
 def open_file(path):
@@ -280,14 +303,32 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         if status_callback:
             status_callback("Processing data...")
 
+        # Clean and validate the data
         records = selected_df.to_dict(orient="records")
+        cleaned_records = []
+        
+        for record in records:
+            cleaned_record = {}
+            for key, value in record.items():
+                # Convert all values to strings and clean them
+                if value is None:
+                    cleaned_record[key] = ""
+                else:
+                    # Remove any problematic characters and limit length
+                    cleaned_value = str(value).strip()
+                    # Remove any non-printable characters except newlines and tabs
+                    cleaned_value = ''.join(char for char in cleaned_value if char.isprintable() or char in '\n\t')
+                    # Limit length to prevent overflow
+                    cleaned_record[key] = cleaned_value[:200] if len(cleaned_value) > 200 else cleaned_value
+            cleaned_records.append(cleaned_record)
+        
         pages = []
 
         # Process records in chunks of 4 (or configured size)
-        total_chunks = (len(records) + items_per_page - 1) // items_per_page
+        total_chunks = (len(cleaned_records) + items_per_page - 1) // items_per_page
         current_chunk = 0
 
-        for chunk in chunk_records(records, items_per_page):
+        for chunk in chunk_records(cleaned_records, items_per_page):
             current_chunk += 1
             if progress_callback:
                 progress = (current_chunk / total_chunks) * 50
@@ -297,6 +338,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                 status_callback(f"Generating page {current_chunk} of {total_chunks}...")
 
             try:
+                # Create a fresh template instance for each chunk
                 tpl = DocxTemplate(template_path)
                 context = {}
 
@@ -308,13 +350,14 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                     if " - " in vendor_name:
                         vendor_name = vendor_name.split(" - ")[1]
                     
+                    # Ensure all values are strings and not too long
                     context[f"Label{idx}"] = {
-                        "ProductName": record.get("Product Name*", ""),
-                        "Barcode": record.get("Barcode*", ""),
-                        "AcceptedDate": record.get("Accepted Date", ""),
-                        "QuantityReceived": record.get("Quantity Received*", ""),
-                        "Vendor": vendor_name or "Unknown Vendor",  # Only use Unknown if empty
-                        "ProductType": record.get("Product Type*", "")
+                        "ProductName": str(record.get("Product Name*", ""))[:100],
+                        "Barcode": str(record.get("Barcode*", ""))[:50],
+                        "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
+                        "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
+                        "Vendor": str(vendor_name or "Unknown Vendor")[:50],
+                        "ProductType": str(record.get("Product Type*", ""))[:50]
                     }
 
                 # Fill remaining slots with empty values
@@ -331,52 +374,79 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                 # Render template with context
                 tpl.render(context)
                 
-                # Save to BytesIO
+                # Save to BytesIO with proper error handling
                 output = BytesIO()
                 tpl.save(output)
-                pages.append(Document(output))
+                output.seek(0)
+                
+                # Create document from BytesIO
+                doc = Document(output)
+                pages.append(doc)
 
             except Exception as e:
+                logger.error(f"Error generating page {current_chunk}: {e}")
                 raise ValueError(f"Error generating page {current_chunk}: {e}")
 
         if not pages:
             return False, "No documents generated."
 
-        # Combine pages
+        # Combine pages with better error handling
         if status_callback:
             status_callback("Combining pages...")
 
-        master = pages[0]
-        composer = Composer(master)
-        for i, doc in enumerate(pages[1:]):
+        try:
+            master = pages[0]
+            composer = Composer(master)
+            
+            for i, doc in enumerate(pages[1:]):
+                if progress_callback:
+                    progress = 50 + ((i + 1) / len(pages[1:])) * 40
+                    progress_callback(int(progress))
+                
+                # Add page break before appending
+                if hasattr(composer, 'doc') and composer.doc.paragraphs:
+                    composer.doc.paragraphs[-1].add_run().add_break()
+                
+                composer.append(doc)
+
+            # Save final document with proper error handling
+            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+            outname = f"inventory_slips_{now}.docx"
+            outpath = os.path.join(config['PATHS']['output_dir'], outname)
+
+            if status_callback:
+                status_callback("Saving document...")
+
+            # Save to a temporary file first, then move to final location
+            temp_path = outpath + ".tmp"
+            master.save(temp_path)
+            
+            # Validate the saved document
+            if not validate_docx(temp_path):
+                raise ValueError("Generated document is corrupted")
+            
+            # Move to final location
+            import shutil
+            shutil.move(temp_path, outpath)
+
+            # Adjust font sizes
+            if status_callback:
+                status_callback("Adjusting formatting...")
+            adjust_table_font_sizes(outpath)
+
             if progress_callback:
-                progress = 50 + ((i + 1) / len(pages[1:])) * 40
-                progress_callback(int(progress))
-            composer.append(doc)
+                progress_callback(100)
 
-        # Save final document
-        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        outname = f"inventory_slips_{now}.docx"
-        outpath = os.path.join(config['PATHS']['output_dir'], outname)
+            return True, outpath
 
-        if status_callback:
-            status_callback("Saving document...")
-
-        master.save(outpath)
-
-        # Adjust font sizes
-        if status_callback:
-            status_callback("Adjusting formatting...")
-        adjust_table_font_sizes(outpath)
-
-        if progress_callback:
-            progress_callback(100)
-
-        return True, outpath
+        except Exception as e:
+            logger.error(f"Error combining or saving documents: {e}")
+            raise ValueError(f"Error combining or saving documents: {e}")
 
     except Exception as e:
         if status_callback:
             status_callback(f"Error: {str(e)}")
+        logger.error(f"Error in run_full_process_inventory_slips: {str(e)}")
         return False, str(e)
 
 # Parse Bamboo transfer schema JSON
@@ -631,7 +701,7 @@ def process_csv_data(df):
             df[vendor_col] = df[vendor_col].fillna("Unknown Vendor")
         
         if not any("Accepted Date" in c for c in df.columns):
-            today = datetime.datetime.today().strftime("%Y-%m-%d")
+            today = datetime.today().strftime("%Y-%m-%d")
             df["Accepted Date"] = today
         
         if not any("Product Type*" in c for c in df.columns):
@@ -665,24 +735,270 @@ def process_csv_data(df):
         logger.error(f"Error in process_csv_data: {str(e)}", exc_info=True)
         return None, f"Failed to process CSV data: {e}"
 
-# First, update the chunk size and compression level
-def chunk_session_data(data, chunk_size=3000):
-    """Split large data into smaller chunks with higher compression"""
-    if not isinstance(data, str):
-        data = json.dumps(data)
-    
-    # Use higher compression level (9 is highest)
-    compressed = zlib.compress(data.encode('utf-8'), level=9)
-    encoded = base64.b64encode(compressed).decode('utf-8')
-    
-    # Calculate optimal chunk size
-    total_size = len(encoded)
-    num_chunks = (total_size + chunk_size - 1) // chunk_size
-    if num_chunks * 40 + total_size > 4000:  # Account for chunk metadata
-        chunk_size = max(1000, (4000 - num_chunks * 40) // num_chunks)
-    
-    chunks = [encoded[i:i+chunk_size] for i in range(0, len(encoded), chunk_size)]
-    return chunks
+def limit_dataframe_for_session(df, max_rows=25):
+    """Limit DataFrame size to prevent session cookie from becoming too large"""
+    if len(df) > max_rows:
+        logger.warning(f"DataFrame has {len(df)} rows, limiting to {max_rows} for session storage")
+        return df.head(max_rows)
+    return df
+
+def store_chunked_data(key, data):
+    """Store data in smaller chunks in the session with better compression"""
+    try:
+        # Convert data to string if it's a DataFrame
+        if isinstance(data, pd.DataFrame):
+            # Limit DataFrame size for session storage
+            data = limit_dataframe_for_session(data)
+            # Convert to JSON with minimal formatting to reduce size
+            data = data.to_json(orient='records', date_format='iso')
+        elif not isinstance(data, str):
+            # Ensure it's a string
+            data = json.dumps(data, separators=(',', ':'))
+        
+        # Ensure data is a string
+        if not isinstance(data, str):
+            data = str(data)
+        
+        # For raw_json, only store essential metadata to reduce size
+        if key == 'raw_json' and len(data) > 2000:
+            # For large raw data, only store a summary
+            try:
+                parsed = json.loads(data) if isinstance(data, str) else data
+                if isinstance(parsed, dict):
+                    # Store only key metadata
+                    summary = {
+                        'type': 'summary',
+                        'keys': list(parsed.keys())[:5],  # First 5 keys
+                        'size': len(data)
+                    }
+                    data = json.dumps(summary, separators=(',', ':'))
+                else:
+                    # For lists, store count and first item
+                    summary = {
+                        'type': 'list_summary',
+                        'count': len(parsed) if isinstance(parsed, list) else 0,
+                        'size': len(data)
+                    }
+                    data = json.dumps(summary, separators=(',', ':'))
+            except:
+                # If parsing fails, truncate the data
+                data = data[:1000] + "...[truncated]"
+        
+        # Compress the data first to reduce size
+        compressed = zlib.compress(data.encode('utf-8'), level=9)
+        encoded = base64.b64encode(compressed).decode('utf-8')
+        
+        # Use even smaller chunk size to stay well within cookie limits
+        chunk_size = 800  # Further reduced to ensure cookie size compliance
+        chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
+        
+        # Store number of chunks
+        session[f'{key}_chunks'] = len(chunks)
+        
+        # Store each chunk with index
+        for i, chunk in enumerate(chunks):
+            session[f'{key}_chunk_{i}'] = chunk
+            
+        logger.info(f"Stored {len(chunks)} chunks in session for {key} (total size: {len(encoded)} chars)")
+        return True
+    except Exception as e:
+        logger.error(f"Error storing chunked data: {str(e)}")
+        return False
+
+def get_chunked_data(key):
+    """Retrieve and reconstruct data from chunks"""
+    try:
+        num_chunks = session.get(f'{key}_chunks')
+        if num_chunks is None:
+            logger.warning(f"No chunks found for key: {key}")
+            return None
+            
+        # Reconstruct data from chunks
+        encoded_data = ''
+        for i in range(num_chunks):
+            chunk = session.get(f'{key}_chunk_{i}')
+            if chunk is None:
+                logger.error(f"Missing chunk {i} for {key}")
+                return None
+            encoded_data += chunk
+        
+        # Decompress the data
+        try:
+            compressed_data = base64.b64decode(encoded_data)
+            decompressed = zlib.decompress(compressed_data)
+            return decompressed.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Error decompressing data: {str(e)}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error retrieving chunked data: {str(e)}")
+        return None
+
+def clear_chunked_data(key):
+    """Remove all chunks for a given key"""
+    try:
+        num_chunks = session.get(f'{key}_chunks')
+        if num_chunks is not None:
+            for i in range(num_chunks):
+                session.pop(f'{key}_chunk_{i}', None)
+        session.pop(f'{key}_chunks', None)
+    except Exception as e:
+        logger.error(f"Error clearing chunked data: {str(e)}")
+
+def cleanup_temp_files():
+    """Clean up any temporary files that might be left behind"""
+    try:
+        import glob
+        temp_patterns = [
+            os.path.join(DEFAULT_SAVE_DIR, "*.tmp"),
+            os.path.join(DEFAULT_SAVE_DIR, "*.font_adjust.tmp"),
+            os.path.join(UPLOAD_FOLDER, "*.tmp")
+        ]
+        
+        for pattern in temp_patterns:
+            for temp_file in glob.glob(pattern):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Cleaned up temporary file: {temp_file}")
+                except Exception as e:
+                    logger.warning(f"Could not remove temporary file {temp_file}: {e}")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+def create_robust_inventory_slip(selected_df, config, status_callback=None):
+    """
+    Create a robust inventory slip document using a different approach to avoid corruption.
+    """
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        
+        if status_callback:
+            status_callback("Creating robust inventory slip...")
+        
+        # Create a completely new document
+        doc = Document()
+        
+        # Set document properties
+        doc.core_properties.title = "Inventory Slip"
+        doc.core_properties.author = "Inventory Slip Generator"
+        doc.core_properties.created = datetime.now()
+        
+        # Add title with proper formatting
+        title_para = doc.add_paragraph()
+        title_run = title_para.add_run('INVENTORY SLIP')
+        title_run.font.size = Pt(18)
+        title_run.font.bold = True
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Add spacing
+        doc.add_paragraph()
+        
+        # Add date
+        date_para = doc.add_paragraph()
+        date_run = date_para.add_run(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        date_run.font.size = Pt(10)
+        date_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        
+        # Add more spacing
+        doc.add_paragraph()
+        doc.add_paragraph()
+        
+        # Create table with proper structure
+        num_rows = len(selected_df) + 1  # +1 for header
+        num_cols = 6
+        table = doc.add_table(rows=num_rows, cols=num_cols)
+        
+        # Set table style
+        table.style = 'Table Grid'
+        table.allow_autofit = False
+        
+        # Define headers
+        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Product Type', 'Accepted Date']
+        
+        # Add header row
+        header_row = table.rows[0]
+        for i, header_text in enumerate(headers):
+            cell = header_row.cells[i]
+            cell.text = header_text
+            # Make header bold
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.bold = True
+                    run.font.size = Pt(11)
+        
+        # Add data rows
+        for idx, (_, row) in enumerate(selected_df.iterrows(), 1):
+            table_row = table.rows[idx]
+            
+            # Clean and limit data
+            product_name = str(row.get('Product Name*', ''))[:40]
+            barcode = str(row.get('Barcode*', ''))[:25]
+            quantity = str(row.get('Quantity Received*', ''))[:15]
+            vendor = str(row.get('Vendor', ''))[:25]
+            product_type = str(row.get('Product Type*', ''))[:25]
+            accepted_date = str(row.get('Accepted Date', ''))[:15]
+            
+            # Fill cells
+            table_row.cells[0].text = product_name
+            table_row.cells[1].text = barcode
+            table_row.cells[2].text = quantity
+            table_row.cells[3].text = vendor
+            table_row.cells[4].text = product_type
+            table_row.cells[5].text = accepted_date
+            
+            # Set font size for all cells in this row
+            for cell in table_row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = Pt(10)
+        
+        # Add spacing after table
+        doc.add_paragraph()
+        
+        # Add footer
+        footer_para = doc.add_paragraph()
+        footer_run = footer_para.add_run(f"Total Items: {len(selected_df)}")
+        footer_run.font.size = Pt(10)
+        footer_run.font.italic = True
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Save document with unique name
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        outname = f"inventory_slip_robust_{now}.docx"
+        outpath = os.path.join(config['PATHS']['output_dir'], outname)
+        
+        if status_callback:
+            status_callback("Saving robust document...")
+        
+        # Save with error handling
+        try:
+            doc.save(outpath)
+            
+            # Verify the file was created and has content
+            if not os.path.exists(outpath):
+                raise ValueError("Document file was not created")
+            
+            file_size = os.path.getsize(outpath)
+            if file_size < 1000:
+                raise ValueError(f"Document file is too small: {file_size} bytes")
+            
+            if status_callback:
+                status_callback("Robust document created successfully!")
+            
+            return True, outpath
+            
+        except Exception as save_error:
+            logger.error(f"Error saving robust document: {save_error}")
+            return False, f"Error saving document: {save_error}"
+        
+    except Exception as e:
+        logger.error(f"Error in create_robust_inventory_slip: {str(e)}")
+        return False, str(e)
 
 @app.route('/paste-json', methods=['POST'])
 def paste_json():
@@ -701,9 +1017,14 @@ def paste_json():
         if result_df is None or result_df.empty:
             return jsonify({'success': False, 'message': 'Could not process pasted JSON data.'}), 400
 
-        session['df_json'] = result_df.to_json(orient='records')
+        # Store data using chunked storage
+        store_chunked_data('df_json', result_df)
+        # Only store raw data if it's small enough
+        if len(pasted_json) < 2000:
+            store_chunked_data('raw_json', pasted_json)
+        else:
+            store_chunked_data('raw_json', {"type": "large_json", "size": len(pasted_json)})
         session['format_type'] = format_type
-        session['raw_json'] = pasted_json
 
         return jsonify({'success': True, 'redirect': url_for('data_view')})
     except Exception as e:
@@ -728,9 +1049,17 @@ def upload_csv():
             if processed_df is None:
                 flash(msg)
                 return redirect(url_for('index'))
-            session['df_json'] = processed_df.to_json(orient='records')
+            
+            # Store data using chunked storage
+            store_chunked_data('df_json', processed_df)
+            # Only store raw data if it's small enough
+            raw_json = df.to_json(orient='records', default_handler=str)
+            if len(raw_json) < 2000:
+                store_chunked_data('raw_json', raw_json)
+            else:
+                store_chunked_data('raw_json', {"type": "large_csv", "rows": len(df), "columns": list(df.columns)})
             session['format_type'] = 'CSV'
-            session['raw_json'] = df.to_json(orient='records')
+            
             flash('CSV uploaded and processed successfully')
             return redirect(url_for('data_view'))
         except Exception as e:
@@ -743,53 +1072,50 @@ def upload_csv():
 # Then, update the URL loading function
 @app.route('/load-url', methods=['POST'])
 def load_url():
-    """Handle URL loading with proper error handling"""
     try:
-        url = request.form.get('url', '').strip()
-        
+        url = request.form.get('url')
         if not url:
-            flash('Please enter a URL', 'error')
+            flash('Please enter a URL')
             return redirect(url_for('index'))
+            
+        result_df, format_type, raw_data = load_from_url(url)
         
-        # Clear any existing session data
-        clear_chunked_data('df_json')
-        clear_chunked_data('raw_json')
-        session.pop('format_type', None)
-        
-        # Handle different URL types
-        if "bamboo" in url.lower() or "getbamboo" in url.lower():
-            return handle_bamboo_url(url)
+        # Clear any existing data first
+        for key in ['df_json', 'raw_json']:
+            clear_chunked_data(key)
+            
+        # Store new data in chunks
+        if not store_chunked_data('df_json', result_df):
+            raise Exception("Failed to store DataFrame")
+            
+        # Only store raw data if it's small enough
+        if raw_data and len(str(raw_data)) < 2000:
+            if not store_chunked_data('raw_json', raw_data):
+                logger.warning("Failed to store raw data, but continuing...")
         else:
-            result_df, format_type = load_from_url(url)
-            
-            if result_df is None or result_df.empty:
-                flash('Could not process data from URL', 'error')
-                return redirect(url_for('index'))
-            
-            # Store compressed results in chunks
-            logger.info("Storing URL data in chunks...")
-            store_chunked_data('df_json', result_df.to_json(orient='records', default_handler=str))
-            session['format_type'] = format_type
-            
-            flash(f'{format_type} data loaded successfully', 'success')
-            return redirect(url_for('data_view'))
-            
-    except ValueError as ve:
-        logger.error(f'URL validation error: {str(ve)}')
-        flash(str(ve), 'error')
-        return redirect(url_for('index'))
+            logger.info("Raw data too large, storing summary only")
+            summary = {"type": "large_data", "format": format_type}
+            store_chunked_data('raw_json', summary)
+        
+        return redirect(url_for('data_view'))
+        
     except Exception as e:
-        logger.error(f'Error loading URL: {str(e)}', exc_info=True)
-        flash(f'Error loading data: {str(e)}', 'error')
+        flash(f'Error loading data: {str(e)}')
         return redirect(url_for('index'))
     
 def handle_bamboo_url(url):
     try:
-        result_df, format_type = load_from_url(url)
+        result_df, format_type, raw_data = load_from_url(url)
         if result_df is None or result_df.empty:
             flash('Could not process Bamboo data from URL', 'error')
             return redirect(url_for('index'))
-        store_chunked_data('df_json', result_df.to_json(orient='records', default_handler=str))
+        
+        store_chunked_data('df_json', result_df)
+        
+        # Store raw data for transfer info extraction
+        if raw_data:
+            store_chunked_data('raw_json', json.dumps(raw_data))
+        
         session['format_type'] = format_type
         flash(f'{format_type} data loaded successfully', 'success')
         return redirect(url_for('data_view'))
@@ -799,7 +1125,7 @@ def handle_bamboo_url(url):
         return redirect(url_for('index'))
 
 def load_from_url(url):
-    """Download JSON or CSV data from a URL and return as DataFrame and format_type."""
+    """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
@@ -807,22 +1133,22 @@ def load_from_url(url):
         if 'application/json' in content_type or url.lower().endswith('.json'):
             data = response.json()
             df, format_type = parse_inventory_json(data)
-            return df, format_type
+            return df, format_type, data
         elif 'text/csv' in content_type or url.lower().endswith('.csv'):
             df = pd.read_csv(BytesIO(response.content))
             df, msg = process_csv_data(df)
-            return df, 'CSV'
+            return df, 'CSV', None
         else:
             # Try to parse as JSON first, then CSV
             try:
                 data = response.json()
                 df, format_type = parse_inventory_json(data)
-                return df, format_type
+                return df, format_type, data
             except Exception:
                 try:
                     df = pd.read_csv(BytesIO(response.content))
                     df, msg = process_csv_data(df)
-                    return df, 'CSV'
+                    return df, 'CSV', None
                 except Exception as e:
                     raise ValueError(f"Unsupported data format or failed to parse: {e}")
     except Exception as e:
@@ -852,6 +1178,39 @@ def data_view():
             flash('Error loading data. Please try again.')
             return redirect(url_for('index'))
         
+        # Debug logging
+        logger.info(f"DataFrame shape: {df.shape}")
+        logger.info(f"DataFrame columns: {df.columns.tolist()}")
+        if not df.empty:
+            logger.info(f"First row data: {df.iloc[0].to_dict()}")
+            logger.info(f"First row keys: {list(df.iloc[0].keys())}")
+        
+        # Extract transfer information from the DataFrame (first row)
+        transfer_info = {
+            'vendor': 'Unknown',
+            'manifest_id': 'N/A',
+            'accepted_date': 'N/A'
+        }
+        
+        if not df.empty:
+            first_row = df.iloc[0]
+            logger.info(f"Extracting from first row: {first_row.to_dict()}")
+            
+            # Use the exact column names that exist in the data
+            if 'Vendor' in first_row:
+                transfer_info['vendor'] = str(first_row['Vendor'])
+                logger.info(f"Vendor: {transfer_info['vendor']}")
+            
+            if 'Barcode*' in first_row:
+                transfer_info['manifest_id'] = str(first_row['Barcode*'])
+                logger.info(f"Manifest ID (Barcode): {transfer_info['manifest_id']}")
+            
+            if 'Accepted Date' in first_row:
+                transfer_info['accepted_date'] = str(first_row['Accepted Date'])
+                logger.info(f"Accepted Date: {transfer_info['accepted_date']}")
+        
+        logger.info(f"Final transfer info: {transfer_info}")
+        
         # Format data for template
         products = []
         for idx, row in df.iterrows():
@@ -861,7 +1220,10 @@ def data_view():
                 'strain': str(row.get('Strain Name', '')),
                 'sku': str(row.get('Barcode*', '')),
                 'quantity': str(row.get('Quantity Received*', '')),
-                'source': format_type or 'Unknown'
+                'source': format_type or 'Unknown',
+                'vendor': str(row.get('Vendor', 'Unknown')),
+                'manifest_id': str(row.get('Barcode*', 'N/A')),
+                'accepted_date': str(row.get('Accepted Date', 'N/A'))
             }
             products.append(product)
 
@@ -882,6 +1244,7 @@ def data_view():
 
 @app.route('/generate-slips', methods=['POST'])
 def generate_slips():
+    """Generate inventory slips using the original template-based method"""
     try:
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
@@ -892,19 +1255,32 @@ def generate_slips():
         
         # Convert indices to integers
         selected_indices = [int(idx) for idx in selected_indices]
+        logger.info(f"Selected indices: {selected_indices}")
         
-        # Load data from session
-        df_json = session.get('df_json', None)
+        # Load data from session using chunked data
+        df_json = get_chunked_data('df_json')
         
         if df_json is None:
             flash('No data available. Please load data first.')
             return redirect(url_for('index'))
         
         # Convert JSON to DataFrame
-        df = pd.read_json(df_json, orient='records')
+        try:
+            if isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                df = pd.read_json(df_json, orient='records')
+        except Exception as e:
+            logger.error(f"Error converting JSON to DataFrame: {str(e)}")
+            flash('Error loading data. Please try again.')
+            return redirect(url_for('data_view'))
+        
+        logger.info(f"DataFrame shape: {df.shape}")
+        logger.info(f"DataFrame columns: {df.columns.tolist()}")
         
         # Get only selected rows
         selected_df = df.iloc[selected_indices].copy()
+        logger.info(f"Selected DataFrame shape: {selected_df.shape}")
         
         # Load configuration
         config = load_config()
@@ -915,10 +1291,12 @@ def generate_slips():
         
         def status_callback(msg):
             status_messages.append(msg)
+            logger.info(f"Status: {msg}")
         
         def progress_callback(value):
             progress_values.append(value)
         
+        logger.info("Starting document generation...")
         success, result = run_full_process_inventory_slips(
             selected_df,
             config,
@@ -927,6 +1305,13 @@ def generate_slips():
         )
         
         if success:
+            logger.info(f"Document generated successfully: {result}")
+            # Validate the generated file
+            if not validate_docx(result):
+                logger.error("Generated document failed validation")
+                flash('Generated document appears to be corrupted. Please try again.')
+                return redirect(url_for('data_view'))
+            
             # Return the file for download
             return send_file(
                 result,
@@ -935,11 +1320,84 @@ def generate_slips():
                 mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             )
         else:
+            logger.error(f"Document generation failed: {result}")
             flash(f'Failed to generate inventory slips: {result}')
             return redirect(url_for('data_view'))
     
     except Exception as e:
+        logger.error(f"Error in generate_slips: {str(e)}", exc_info=True)
         flash(f'Error generating slips: {str(e)}')
+        return redirect(url_for('data_view'))
+
+# To this:
+@app.route('/generate_robust_slips_docx', methods=['POST'])
+def generate_robust_slips_docx():
+    """Generate robust inventory slips without complex template rendering"""
+    try:
+        # Get selected products
+        selected_indices = request.form.getlist('selected_indices[]')
+        
+        if not selected_indices:
+            flash('No products selected.')
+            return redirect(url_for('data_view'))
+        
+        # Convert indices to integers
+        selected_indices = [int(idx) for idx in selected_indices]
+        logger.info(f"Selected indices for robust slip: {selected_indices}")
+        
+        # Load data from session using chunked data
+        df_json = get_chunked_data('df_json')
+        
+        if df_json is None:
+            flash('No data available. Please load data first.')
+            return redirect(url_for('index'))
+        
+        # Convert JSON to DataFrame
+        try:
+            if isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                df = pd.read_json(df_json, orient='records')
+        except Exception as e:
+            logger.error(f"Error converting JSON to DataFrame: {str(e)}")
+            flash('Error loading data. Please try again.')
+            return redirect(url_for('data_view'))
+        
+        # Get only selected rows
+        selected_df = df.iloc[selected_indices].copy()
+        logger.info(f"Selected DataFrame shape for robust slip: {selected_df.shape}")
+        
+        # Load configuration
+        config = load_config()
+        
+        # Generate the robust file
+        def status_callback(msg):
+            logger.info(f"Robust slip status: {msg}")
+        
+        logger.info("Starting robust document generation...")
+        success, result = create_robust_inventory_slip(
+            selected_df,
+            config,
+            status_callback
+        )
+        
+        if success:
+            logger.info(f"Robust document generated successfully: {result}")
+            # Return the file for download
+            return send_file(
+                result,
+                as_attachment=True,
+                download_name=os.path.basename(result),
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            )
+        else:
+            logger.error(f"Robust document generation failed: {result}")
+            flash(f'Failed to generate robust inventory slips: {result}')
+            return redirect(url_for('data_view'))
+    
+    except Exception as e:
+        logger.error(f"Error in generate_robust_slips: {str(e)}", exc_info=True)
+        flash(f'Error generating robust slips: {str(e)}')
         return redirect(url_for('data_view'))
 
 @app.route('/show-result')
@@ -1010,161 +1468,6 @@ def settings():
         version=APP_VERSION
     )
 
-@app.route('/view-json')
-def view_json():
-    raw_json = session.get('raw_json', None)
-    format_type = session.get('format_type', None)
-    
-    if raw_json is None:
-        flash('No JSON data available.')
-        return redirect(url_for('index'))
-    
-    # Load configuration
-    config = load_config()
-    
-    return render_template(
-        'view_json.html',
-        raw_json=raw_json,
-        format_type=format_type,
-        theme=config['SETTINGS'].get('theme', 'dark'),
-        version=APP_VERSION
-    )
-
-@app.route('/clear-data')
-def clear_data():
-    # Clear chunked session data
-    clear_chunked_data('df_json')
-    clear_chunked_data('raw_json')
-    session.pop('format_type', None)
-    session.pop('output_file', None)
-    
-    flash('Data cleared successfully')
-    return redirect(url_for('index'))
-
-@app.route('/about')
-def about():
-    config = load_config()
-    return render_template(
-        'about.html',
-        version=APP_VERSION,
-        theme=config['SETTINGS'].get('theme', 'dark')
-    )
-
-@app.route('/')
-def index():
-    config = load_config()
-    return render_template(
-        'index.html',
-        config=config,
-        theme=config['SETTINGS'].get('theme', 'dark'),
-        version=APP_VERSION
-    )
-
-@app.route('/search-json-or-api', methods=['POST'])
-def search_json_or_api():
-    user_input = request.form.get('search_input', '').strip()
-    if not user_input:
-        flash('Please enter JSON data or an API URL.')
-        return redirect(url_for('index'))
-
-    # Try to detect if input is a URL
-    if user_input.startswith('http://') or user_input.startswith('https://'):
-        try:
-            with urllib.request.urlopen(user_input) as resp:
-                data = json.loads(resp.read().decode())
-            result_df, format_type = parse_inventory_json(data)
-            if result_df is None or result_df.empty:
-                flash(f'Could not process data from URL.')
-                return redirect(url_for('index'))
-            session['df_json'] = result_df.to_json(orient='records')
-            session['format_type'] = format_type
-            session['raw_json'] = json.dumps(data)
-            flash(f'{format_type} data loaded successfully from URL')
-            return redirect(url_for('data_view'))
-        except Exception as e:
-            flash(f'Failed to load data from URL: {str(e)}')
-            return redirect(url_for('index'))
-    else:
-        # Try to parse as JSON
-        try:
-            data = json.loads(user_input)
-            result_df, format_type = parse_inventory_json(data)
-            if result_df is None or result_df.empty:
-                flash(f'Could not process pasted JSON data.')
-                return redirect(url_for('index'))
-            session['df_json'] = result_df.to_json(orient='records')
-            session['format_type'] = format_type
-            session['raw_json'] = user_input
-            flash(f'{format_type} data imported successfully')
-            return redirect(url_for('data_view'))
-        except Exception as e:
-            flash(f'Failed to import JSON data: {str(e)}')
-            return redirect(url_for('index'))
-
-# Error handlers
-@app.errorhandler(404)
-def page_not_found(e):
-    config = load_config()
-    return render_template('404.html', theme=config['SETTINGS'].get('theme', 'dark')), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    config = load_config()
-    return render_template('500.html', theme=config['SETTINGS'].get('theme', 'dark')), 500
-
-def validate_docx(file_path):
-    """Validate the generated DOCX file"""
-    try:
-        doc = Document(file_path)
-        # Try to access content to verify document is readable
-        _ = doc.paragraphs
-        _ = doc.tables
-        return True
-    except Exception as e:
-        logger.error(f"Document validation failed: {str(e)}")
-        return False
-
-@app.route('/select-directory', methods=['POST'])
-def select_directory():
-    selected_dir = request.form.get('directory')
-    if selected_dir and os.path.exists(selected_dir):
-        config = load_config()
-        config['PATHS']['output_dir'] = selected_dir
-        save_config(config)
-        return jsonify({
-            'success': True,
-            'selected_dir': selected_dir,
-            'message': 'Output directory updated successfully'
-        })
-    return jsonify({
-        'success': False,
-        'message': 'Invalid directory selected'
-    }), 400
-
-import subprocess
-from flask import jsonify
-
-@app.route('/open_downloads')
-def open_downloads():
-    downloads_dir = get_downloads_dir()  # This function returns the appropriate downloads folder
-    try:
-        if sys.platform == "darwin":  # macOS
-            subprocess.Popen(["open", downloads_dir])
-        elif sys.platform == "win32":  # Windows
-            os.startfile(downloads_dir)
-        else:  # Linux and other OSes
-            subprocess.Popen(["xdg-open", downloads_dir])
-        return jsonify(success=True)
-    except Exception as e:
-        return jsonify(success=False, message=str(e))
-
-def create_api_signature(secret_key, message):
-    """Create HMAC signature for API requests"""
-    key = secret_key.encode('utf-8')
-    message = message.encode('utf-8')
-    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
-    return signature
-
 def require_api_key(f):
     """Decorator to require API key for certain routes"""
     @wraps(f)
@@ -1207,7 +1510,6 @@ class APIClient:
         return headers
     
     def make_request(self, endpoint, method='GET', params=None, data=None):
-        """Make API request with proper error handling"""
         """Make API request with proper error handling"""
         url = f"{self.api_config['base_url']}/{self.api_config['version']}/{endpoint}"
         headers = self.get_headers()
@@ -1373,81 +1675,227 @@ class APIDataError(APIError):
 
 @app.errorhandler(APIError)
 def handle_api_error(error):
+    """Handle API errors gracefully"""
     if isinstance(error, APIAuthError):
-        flash('API authentication failed. Please check your API key.', 'error')
+        flash(f'Authentication error: {error}', 'error')
     elif isinstance(error, APIRateLimit):
-        flash('API rate limit exceeded. Please try again later.', 'error')
+        flash(f'Rate limit exceeded: {error}', 'warning')
     elif isinstance(error, APIDataError):
-        flash('Error processing API data. Please check the format.', 'error')
+        flash(f'Data error: {error}', 'error')
     else:
-        flash(f'API Error: {str(error)}', 'error')
-    
-    return redirect(url_for('index'))
+        flash(f'API error: {error}', 'error')
+    return redirect(url_for('api_settings'))
 
-# Add these helper functions after your imports section
-def chunk_session_data(data, chunk_size=3000):
-    """Split large data into smaller chunks with higher compression"""
-    if not isinstance(data, str):
-        data = json.dumps(data)
-    
-    # Use higher compression level (9 is highest)
-    compressed = zlib.compress(data.encode('utf-8'), level=9)
-    encoded = base64.b64encode(compressed).decode('utf-8')
-    
-    # Calculate optimal chunk size
-    total_size = len(encoded)
-    num_chunks = (total_size + chunk_size - 1) // chunk_size
-    if num_chunks * 40 + total_size > 4000:  # Account for chunk metadata
-        chunk_size = max(1000, (4000 - num_chunks * 40) // num_chunks)
-    
-    chunks = [encoded[i:i+chunk_size] for i in range(0, len(encoded), chunk_size)]
-    return chunks
-
-def store_chunked_data(key, data):
-    """Store large data in session using chunks"""
-    chunks = chunk_session_data(data)
-    for i, chunk in enumerate(chunks):
-        session[f'{key}_chunk_{i}'] = chunk
-    session[f'{key}_chunks'] = len(chunks)
-
-def get_chunked_data(key):
-    """Retrieve and reconstruct chunked data from session"""
+@app.route('/test-chunked-data')
+def test_chunked_data():
+    """Test route to debug chunked data storage"""
     try:
-        num_chunks = session.get(f'{key}_chunks')
-        if not num_chunks:
-            return None
-            
-        chunks = []
-        for i in range(num_chunks):
-            chunk = session.get(f'{key}_chunk_{i}')
-            if chunk is None:
-                return None
-            chunks.append(chunk)
+        # Test storing and retrieving data
+        test_data = {"test": "data", "number": 123}
+        logger.info("Testing chunked data storage...")
         
-        encoded = ''.join(chunks)
-        compressed = base64.b64decode(encoded)
-        decompressed = zlib.decompress(compressed)
-        return json.loads(decompressed)
+        store_chunked_data('test_key', json.dumps(test_data))
+        retrieved_data = get_chunked_data('test_key')
+        
+        logger.info(f"Test data: {test_data}")
+        logger.info(f"Retrieved data: {retrieved_data}")
+        
+        # Check session contents
+        session_keys = [k for k in session.keys() if k.startswith('test_key')]
+        logger.info(f"Session keys for test_key: {session_keys}")
+        
+        return jsonify({
+            'success': True,
+            'original': test_data,
+            'retrieved': retrieved_data,
+            'session_keys': session_keys
+        })
     except Exception as e:
-        logger.error(f"Error retrieving chunked data: {str(e)}")
-        return None
+        logger.error(f"Test failed: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)})
 
-def clear_chunked_data(key):
-    """Clear all chunks for a given key from session"""
-    num_chunks = session.get(f'{key}_chunks', 0)
-    for i in range(num_chunks):
-        session.pop(f'{key}_chunk_{i}', None)
-    session.pop(f'{key}_chunks', None)
+@app.route('/about')
+def about():
+    """About page"""
+    config = load_config()
+    return render_template('about.html', config=config, version=APP_VERSION)
+
+@app.route('/')
+def index():
+    # Load configuration for the template
+    config = load_config()
+    return render_template('index.html', config=config, version=APP_VERSION)
+
+@app.route('/search_json_or_api', methods=['POST'])
+def search_json_or_api():
+    """Handle both JSON paste and API URL functionality"""
+    try:
+        search_input = request.form.get('search_input', '').strip()
+        
+        if not search_input:
+            flash('Please enter JSON data or an API URL.')
+            return redirect(url_for('index'))
+        
+        # Check if it looks like a URL
+        if search_input.startswith(('http://', 'https://')):
+            # Handle as API URL
+            return load_from_url(search_input)
+        else:
+            # Handle as JSON data
+            return paste_json_data(search_input)
+            
+    except Exception as e:
+        logger.error(f"Error in search_json_or_api: {str(e)}")
+        flash(f'Error processing input: {str(e)}')
+        return redirect(url_for('index'))
+
+def paste_json_data(json_text):
+    """Handle JSON data processing"""
+    try:
+        if not json_text.strip():
+            flash('Please enter JSON data.')
+            return redirect(url_for('index'))
+        
+        # Parse JSON
+        try:
+            json_data = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            flash(f'Invalid JSON format: {str(e)}')
+            return redirect(url_for('index'))
+        
+        # Determine format and process
+        if 'transfers' in json_data:
+            # Bamboo format
+            df = parse_bamboo_data(json_data)
+            format_type = 'Bamboo'
+        elif 'manifest' in json_data:
+            # Cultivera format
+            df = parse_cultivera_data(json_data)
+            format_type = 'Cultivera'
+        elif 'data' in json_data and isinstance(json_data['data'], list):
+            # GrowFlow format
+            df = parse_growflow_data(json_data)
+            format_type = 'GrowFlow'
+        else:
+            # Generic inventory format
+            df = parse_inventory_json(json_data)
+            format_type = 'Generic'
+        
+        if df is None or df.empty:
+            flash('No valid data found in JSON.')
+            return redirect(url_for('index'))
+        
+        # Store data in session
+        store_chunked_data('df_json', df)
+        session['format_type'] = format_type
+        
+        flash(f'Successfully loaded {len(df)} items from {format_type} data.')
+        return redirect(url_for('data_view'))
+        
+    except Exception as e:
+        logger.error(f"Error in paste_json_data: {str(e)}")
+        flash(f'Error processing JSON data: {str(e)}')
+        return redirect(url_for('index'))
+
+@app.route('/open_downloads', methods=['GET'])
+def open_downloads():
+    """Open the downloads folder"""
+    try:
+        config = load_config()
+        downloads_path = config['PATHS']['output_dir']
+        
+        # Open the folder
+        open_file(downloads_path)
+        
+        return jsonify({'success': True, 'message': 'Downloads folder opened'})
+    except Exception as e:
+        logger.error(f"Error opening downloads folder: {str(e)}")
+        return jsonify({'success': False, 'message': str(e)})
+
+def validate_docx(file_path):
+    """Validate that a Word document is readable and not corrupted"""
+    try:
+        if not os.path.exists(file_path):
+            return False
+        
+        file_size = os.path.getsize(file_path)
+        if file_size < 1000:  # Too small to be a valid Word document
+            return False
+        
+        # Try to open and read the document
+        doc = Document(file_path)
+        
+        # Check if document has any content
+        if len(doc.paragraphs) == 0 and len(doc.tables) == 0:
+            return False
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Document validation failed for {file_path}: {str(e)}")
+        return False
+
+@app.route('/clear_data')
+def clear_data():
+    """Clear all session data"""
+    try:
+        # Clear all chunked data
+        for key in ['df_json', 'raw_json']:
+            clear_chunked_data(key)
+        
+        # Clear other session data
+        session.pop('format_type', None)
+        
+        flash('All data has been cleared successfully.', 'success')
+        return redirect(url_for('index'))
+    except Exception as e:
+        logger.error(f"Error clearing data: {str(e)}")
+        flash('Error clearing data. Please try again.', 'error')
+        return redirect(url_for('index'))
+
+@app.route('/select_directory', methods=['POST'])
+def select_directory():
+    """Select output directory"""
+    try:
+        # For now, return the default downloads directory
+        # In a full implementation, this would open a file dialog
+        config = load_config()
+        downloads_path = config['PATHS']['output_dir']
+        
+        return jsonify({
+            'success': True,
+            'directory': downloads_path,
+            'message': f'Using default directory: {downloads_path}'
+        })
+    except Exception as e:
+        logger.error(f"Error selecting directory: {str(e)}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/fetch_api', methods=['POST'])
+def fetch_api():
+    """Fetch data from API"""
+    try:
+        # This would handle API data fetching
+        # For now, redirect to the search_json_or_api route
+        return redirect(url_for('search_json_or_api'))
+    except Exception as e:
+        logger.error(f"Error fetching API data: {str(e)}")
+        flash(f'Error fetching API data: {str(e)}', 'error')
+        return redirect(url_for('index'))
 
 if __name__ == '__main__':
     try:
+        # Clean up any temporary files from previous runs
+        cleanup_temp_files()
+        
         # Try different ports in case default is taken
-        ports = [5001, 8000, 8080, 8888]
+        ports = [5001, 5002, 5003, 8000, 8001, 8080, 8081, 8888, 9000]
         
         for port in ports:
             try:
+                print(f"Attempting to start server on port {port}...")
                 # Open browser after slight delay to ensure server is running
-                threading.Timer(1.5, lambda: webbrowser.open(f'http://localhost:{port}')).start()
+                threading.Timer(1.5, lambda p=port: webbrowser.open(f'http://localhost:{p}')).start()
                 
                 app.run(
                     host='localhost',
@@ -1457,9 +1905,11 @@ if __name__ == '__main__':
                 )
                 break  # If server starts successfully, break the loop
                 
-            except OSError:
+            except OSError as e:
+                print(f"Port {port} is in use, trying next port...")
                 if port == ports[-1]:  # If we've tried all ports
-                    print("Could not find an available port. Please try again.")
+                    print("Could not find an available port. Please try again or manually specify a port.")
+                    print("Available ports to try manually: 5001, 5002, 5003, 8000, 8001, 8080, 8081, 8888, 9000")
                 continue
                 
     except Exception as e:

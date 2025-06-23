@@ -3,100 +3,133 @@
 {% block title %}Data View - Inventory Slip Generator{% endblock %}
 
 {% block content %}
-<div class="container mt-4">
-  <div class="import-bar mb-3 d-flex align-items-center">
-    <!-- CSV Upload Form -->
-    <form action="{{ url_for('upload_csv') }}" method="post" enctype="multipart/form-data" style="margin-right: 10px;">
-      <button type="submit" class="btn btn-primary btn-lg">Import CSV/JSON</button>
-      <input type="file" name="file" accept=".csv,.json" style="display:none;" onchange="this.form.submit()">
-    </form>
-    <!-- Paste JSON Form -->
-    <form id="paste-json-form" style="margin-right: 10px; display:flex;">
-      <input type="text" name="json_data" placeholder="Paste JSON here" class="form-control" style="width:350px; margin-right:10px;">
-      <button type="submit" class="btn btn-primary btn-lg">Import JSON</button>
-    </form>
-    <!-- Load URL Form -->
-    <form action="{{ url_for('load_url') }}" method="post" style="display:flex;">
-      <input type="text" name="url" placeholder="Paste URL here" class="form-control" style="width:350px; margin-right:10px;">
-      <button type="submit" class="btn btn-primary btn-lg">Load</button>
-    </form>
-  </div>
-  <hr>
-    <div class="row">
-        <div class="col-md-12">
-            <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><i class="fas fa-table"></i> Imported Data</h5>
-                    <div>
-                        <button class="btn btn-primary" onclick="selectAll()" title="Select all products">
-                            <i class="fas fa-check-square" aria-hidden="true"></i> Select All
-                        </button>
-                        <button class="btn btn-secondary" onclick="deselectAll()" title="Deselect all products">
-                            <i class="fas fa-square" aria-hidden="true"></i> Deselect All
-                        </button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="mb-3">
-                            <div class="input-group">
-                            <span class="input-group-text"><i class="fas fa-search" aria-hidden="true"></i></span>
-                            <input type="text" class="form-control" id="searchInput" 
-                                   placeholder="Search products..." aria-label="Search products">
-                            <button class="btn btn-outline-secondary" type="button" onclick="clearSearch()" 
-                                    title="Clear search">
-                                <i class="fas fa-times" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div class="table-responsive">
-                        <table class="table table-hover">
-                            <thead>
-                                <tr>
-                                    <th>
-                                        <input type="checkbox" class="form-check-input" id="selectAllCheckbox"
-                                               aria-label="Select all products">
-                                    </th>
-                                    <th>Product Name</th>
-                                    <th>Strain</th>
-                                    <th>SKU</th>
-                                    <th>Quantity</th>
-                                    <th>Source</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for product in products %}
-                                <tr>
-                                    <td>
-                                        <input type="checkbox" class="form-check-input product-checkbox" 
-                                               value="{{ product.id }}" checked
-                                               aria-label="Select {{ product.name }}">
-                                    </td>
-                                    <td>{{ product.name }}</td>
-                                    <td>{{ product.strain }}</td>
-                                    <td>{{ product.sku }}</td>
-                                    <td>{{ product.quantity }}</td>
-                                    <td>
-                                        <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
-                                            {{ product.source }}
-                                        </span>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
+<div class="container mt-4 data-view">
+  <div class="row">
+    <!-- JSON Link Upload -->
+    <div class="col-md-6">
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5><i class="fas fa-link"></i> Import JSON from URL</h5>
+        </div>
+        <div class="card-body">
+          <form action="{{ url_for('load_url') }}" method="post">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="url" class="form-control" id="json_url" name="url" placeholder="Enter JSON URL..." required>
+                <button class="btn btn-primary" type="submit">
+                  <i class="fas fa-download"></i> Load
+                </button>
+              </div>
+              
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
-                    <div class="text-center mt-4">
-                        <button class="btn btn-success btn-lg" onclick="generateSlips()" 
-                                title="Generate inventory slips for selected products">
-                            <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
-                                        </button>
-                                    </div>
-                                </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
+    <!-- CSV File Upload -->
+    <div class="col-md-6">
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5><i class="fas fa-upload"></i> Upload CSV File</h5>
+        </div>
+        <div class="card-body">
+          <form action="{{ url_for('upload_csv') }}" method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+              
+              <input type="file" class="form-control" id="file" name="file" accept=".csv" required>
+              
+            </div>
+            <button type="submit" class="btn btn-primary">
+              <i class="fas fa-upload"></i> Upload
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- Generate Buttons -->
+  <div class="row mb-4" id="generate-slips-section">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0"><i class="fas fa-file-word"></i> Generate Inventory Slips</h5>
+        </div>
+        <div class="card-body text-center">
+          <button class="btn btn-success btn-lg me-3" onclick="generateSlips()" 
+                  title="Generate inventory slips for selected products">
+            <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
+          </button>
+          <button class="btn btn-info btn-lg" onclick="generateRobustSlips()" 
+                  title="Generate robust inventory slips (more reliable)">
+            <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Robust Slips
+          </button>
+          <p style="color: white;" class="text-muted mt-2 mb-0">
+            <small>Select products from the table below, then click one of the generate buttons above</small>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Imported Data Table -->
+  <div class="row">
+    <div class="col-md-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0"><i class="fas fa-table"></i> Imported Data</h5>
+          <div>
+            <button class="btn btn-primary" onclick="selectAll()" title="Select all products">
+              <i class="fas fa-check-square" aria-hidden="true"></i> Select All
+            </button>
+            <button class="btn btn-secondary" onclick="deselectAll()" title="Deselect all products">
+              <i class="fas fa-square" aria-hidden="true"></i> Deselect All
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-hover">
+              <thead>
+                <tr>
+                  <th>
+                    <input type="checkbox" class="form-check-input" id="selectAllCheckbox" aria-label="Select all products">
+                  </th>
+                  <th>Product Name</th>
+                  <th>Strain</th>
+                  <th>SKU</th>
+                  <th>Quantity</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for product in products %}
+                <tr>
+                  <td>
+                    <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name }}">
+                  </td>
+                  <td>{{ product.name }}</td>
+                  <td>{{ product.strain }}</td>
+                  <td>{{ product.sku }}</td>
+                  <td>{{ product.quantity }}</td>
+                  <td>
+                    <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
+                      {{ product.source }}
+                    </span>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
     <!-- Progress Modal -->
     <div class="modal fade" id="progressModal" data-bs-backdrop="static" tabindex="-1">
@@ -104,13 +137,13 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title">Generating Inventory Slips</h5>
-                                            </div>
+                </div>
                 <div class="modal-body">
                     <div class="progress mb-3">
                         <div class="progress-bar progress-bar-striped progress-bar-animated" 
                              role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                         </div>
-                        </div>
+                    </div>
                     <p class="text-center mb-0" id="progressText">Initializing...</p>
                 </div>
             </div>
@@ -130,20 +163,29 @@ document.addEventListener('DOMContentLoaded', function() {
     progressText = document.getElementById('progressText');
 
     // Initialize search functionality
-    document.getElementById('searchInput').addEventListener('input', filterProducts);
-    });
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', filterProducts);
+    }
+
+    // Add this new code for automatic scrolling
+    const generateSection = document.getElementById('generate-slips-section');
+    if (generateSection) {
+        generateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+});
     
 function selectAll() {
-        document.querySelectorAll('.product-checkbox').forEach(checkbox => {
-            checkbox.checked = true;
+    document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+        checkbox.checked = true;
     });
     document.getElementById('selectAllCheckbox').checked = true;
 }
     
 function deselectAll() {
-        document.querySelectorAll('.product-checkbox').forEach(checkbox => {
-            checkbox.checked = false;
-        });
+    document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+        checkbox.checked = false;
+    });
     document.getElementById('selectAllCheckbox').checked = false;
 }
 
@@ -163,9 +205,13 @@ function clearSearch() {
 }
 
 function updateProgress(percent, text) {
-    progressBar.style.width = percent + '%';
-    progressBar.setAttribute('aria-valuenow', percent);
-    progressText.textContent = text;
+    if (progressBar) {
+        progressBar.style.width = percent + '%';
+        progressBar.setAttribute('aria-valuenow', percent);
+    }
+    if (progressText) {
+        progressText.textContent = text;
+    }
 }
 
 function generateSlips() {
@@ -177,7 +223,9 @@ function generateSlips() {
         return;
     }
 
-    progressModal.show();
+    if (progressModal) {
+        progressModal.show();
+    }
     updateProgress(0, 'Starting generation...');
 
     // Create form data
@@ -190,7 +238,7 @@ function generateSlips() {
         method: 'POST',
         body: formData
     })
-    .then(response => {
+    .then(function(response) {
         if (!response.ok) {
             throw new Error('Network response was not ok');
         }
@@ -203,43 +251,239 @@ function generateSlips() {
                 filename = filenameMatch[1].replace(/['"]/g, '');
             }
         }
-        return response.blob().then(blob => ({ blob, filename }));
+        return response.blob().then(function(blob) {
+            return { blob: blob, filename: filename };
+        });
     })
-    .then(({ blob, filename }) => {
+    .then(function(data) {
         updateProgress(100, 'Generation complete!');
         // Create download link
-        const url = window.URL.createObjectURL(blob);
+        const url = window.URL.createObjectURL(data.blob);
         const a = document.createElement('a');
         a.style.display = 'none';
         a.href = url;
-        a.download = filename;
+        a.download = data.filename;
         document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(url);
-        setTimeout(() => {
-            progressModal.hide();
+        setTimeout(function() {
+            if (progressModal) {
+                progressModal.hide();
+            }
         }, 1000);
     })
-    .catch(error => {
-        progressModal.hide();
+    .catch(function(error) {
+        if (progressModal) {
+            progressModal.hide();
+        }
         alert('Error generating slips: ' + error.message);
     });
 }
 
+function generateRobustSlips() {
+    const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
+        .map(checkbox => checkbox.value);
+
+    if (selectedProducts.length === 0) {
+        alert('Please select at least one product');
+        return;
+    }
+
+    if (progressModal) {
+        progressModal.show();
+    }
+    updateProgress(0, 'Starting robust generation...');
+
+    // Create form data
+    const formData = new FormData();
+    selectedProducts.forEach(productId => {
+        formData.append('selected_indices[]', productId);
+    });
+
+    fetch('{{ url_for("generate_robust_slips_docx") }}', {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(response) {
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
+        // Get filename from Content-Disposition header
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = 'inventory_slips_robust.docx';
+        if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+            if (filenameMatch && filenameMatch[1]) {
+                filename = filenameMatch[1].replace(/['"]/g, '');
+            }
+        }
+        return response.blob().then(function(blob) {
+            return { blob: blob, filename: filename };
+        });
+    })
+    .then(function(data) {
+        updateProgress(100, 'Robust generation complete!');
+        // Create download link
+        const url = window.URL.createObjectURL(data.blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = data.filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        setTimeout(function() {
+            if (progressModal) {
+                progressModal.hide();
+            }
+        }, 1000);
+    })
+    .catch(function(error) {
+        if (progressModal) {
+            progressModal.hide();
+        }
+        alert('Error generating robust slips: ' + error.message);
+    });
+}
+
 // Handle select all checkbox
-document.getElementById('selectAllCheckbox').addEventListener('change', function() {
-    document.querySelectorAll('.product-checkbox').forEach(checkbox => {
-        checkbox.checked = this.checked;
+document.addEventListener('DOMContentLoaded', function() {
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener('change', function() {
+            document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+                checkbox.checked = this.checked;
             });
         });
+    }
     
-// Update select all checkbox when individual checkboxes change
-document.querySelectorAll('.product-checkbox').forEach(checkbox => {
-    checkbox.addEventListener('change', function() {
-        const allChecked = Array.from(document.querySelectorAll('.product-checkbox'))
-            .every(cb => cb.checked);
-        document.getElementById('selectAllCheckbox').checked = allChecked;
+    // Update select all checkbox when individual checkboxes change
+    document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', function() {
+            const allChecked = Array.from(document.querySelectorAll('.product-checkbox'))
+                .every(cb => cb.checked);
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.checked = allChecked;
+            }
+        });
     });
+});
+
+// Transfer Data Functions
+function exportToCSV() {
+    const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
+        .map(checkbox => checkbox.value);
+
+    if (selectedProducts.length === 0) {
+        alert('Please select at least one product to export');
+        return;
+    }
+
+    // Get the table data for selected products
+    const rows = document.querySelectorAll('tbody tr');
+    const csvData = [];
+    
+    // Add header
+    csvData.push(['Product Name', 'Strain', 'SKU', 'Quantity', 'Source']);
+    
+    // Add selected rows
+    selectedProducts.forEach(productId => {
+        const row = rows[productId];
+        if (row) {
+            const cells = row.querySelectorAll('td');
+            const rowData = [
+                cells[1].textContent.trim(),
+                cells[2].textContent.trim(),
+                cells[3].textContent.trim(),
+                cells[4].textContent.trim(),
+                cells[5].textContent.trim()
+            ];
+            csvData.push(rowData);
+        }
     });
+    
+    // Convert to CSV string
+    const csvContent = csvData.map(row => 
+        row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')
+    ).join('\n');
+    
+    // Download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `inventory_data_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+}
+
+function exportToJSON() {
+    const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
+        .map(checkbox => checkbox.value);
+
+    if (selectedProducts.length === 0) {
+        alert('Please select at least one product to export');
+        return;
+    }
+
+    // Get the table data for selected products
+    const rows = document.querySelectorAll('tbody tr');
+    const jsonData = [];
+    
+    selectedProducts.forEach(productId => {
+        const row = rows[productId];
+        if (row) {
+            const cells = row.querySelectorAll('td');
+            const productData = {
+                product_name: cells[1].textContent.trim(),
+                strain: cells[2].textContent.trim(),
+                sku: cells[3].textContent.trim(),
+                quantity: cells[4].textContent.trim(),
+                source: cells[5].textContent.trim()
+            };
+            jsonData.push(productData);
+        }
+    });
+    
+    // Download JSON file
+    const jsonContent = JSON.stringify(jsonData, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `inventory_data_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+}
+
+function viewRawJSON() {
+    // Redirect to the view-json page
+    window.location.href = '{{ url_for("index") }}';
+}
+
+function clearData() {
+    if (confirm('Are you sure you want to clear all data?')) {
+        // Redirect to the clear data page
+        window.location.href = '{{ url_for("clear_data") }}';
+    }
+}
+
+function openDownloads() {
+    fetch('{{ url_for("open_downloads") }}')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) {
+                alert('Error opening downloads folder: ' + (data.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            alert('Error opening downloads folder: ' + error.message);
+        });
+}
 </script>
 {% endblock %}
