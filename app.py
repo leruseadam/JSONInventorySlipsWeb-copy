@@ -44,6 +44,8 @@ import requests
 import pandas as pd
 from docxtpl import DocxTemplate
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_ORIENT
 from docx.shared import Pt, Inches
 from docxcompose.composer import Composer
 import configparser
@@ -291,7 +293,22 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             status_callback("Error: No data selected.")
         return False, "No data selected."
 
+def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
+    # ...existing code...
+    
     try:
+        # Get vendor name from first row
+        vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
+        # Clean vendor name (remove special characters and spaces)
+        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
+        # Get today's date
+        today_date = datetime.now().strftime("%Y%m%d")
+        # Create filename
+        outname = f"{today_date}_{vendor_name}_Slips.docx"
+        outpath = os.path.join(config['PATHS']['output_dir'], outname)
+        
+        # ...rest of existing code...
+        
         # Get settings from config
         items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
         template_path = config['PATHS'].get('template_path')
@@ -867,137 +884,123 @@ def cleanup_temp_files():
         logger.error(f"Error during cleanup: {e}")
 
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
-    """
-    Create a robust inventory slip document using a different approach to avoid corruption.
-    """
     try:
-        from docx import Document
-        from docx.shared import Inches, Pt
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
+        # Get vendor name
+        vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
+        if " - " in vendor_name:
+            vendor_name = vendor_name.split(" - ")[1]
+        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
         
-        if status_callback:
-            status_callback("Creating robust inventory slip...")
-        
-        # Create a completely new document
-        doc = Document()
-        
-        # Set document properties
-        doc.core_properties.title = "Inventory Slip"
-        doc.core_properties.author = "Inventory Slip Generator"
-        doc.core_properties.created = datetime.now()
-        
-        # Add title with proper formatting
-        title_para = doc.add_paragraph()
-        title_run = title_para.add_run('INVENTORY SLIP')
-        title_run.font.size = Pt(18)
-        title_run.font.bold = True
-        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
-        # Add spacing
-        doc.add_paragraph()
-        
-        # Add date
-        date_para = doc.add_paragraph()
-        date_run = date_para.add_run(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        date_run.font.size = Pt(10)
-        date_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        
-        # Add more spacing
-        doc.add_paragraph()
-        doc.add_paragraph()
-        
-        # Create table with proper structure
-        num_rows = len(selected_df) + 1  # +1 for header
-        num_cols = 6
-        table = doc.add_table(rows=num_rows, cols=num_cols)
-        
-        # Set table style
-        table.style = 'Table Grid'
-        table.allow_autofit = False
-        
-        # Define headers
-        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Product Type', 'Accepted Date']
-        
-        # Add header row
-        header_row = table.rows[0]
-        for i, header_text in enumerate(headers):
-            cell = header_row.cells[i]
-            cell.text = header_text
-            # Make header bold
-            for paragraph in cell.paragraphs:
-                for run in paragraph.runs:
-                    run.font.bold = True
-                    run.font.size = Pt(11)
-        
-        # Add data rows
-        for idx, (_, row) in enumerate(selected_df.iterrows(), 1):
-            table_row = table.rows[idx]
-            
-            # Clean and limit data
-            product_name = str(row.get('Product Name*', ''))[:40]
-            barcode = str(row.get('Barcode*', ''))[:25]
-            quantity = str(row.get('Quantity Received*', ''))[:15]
-            vendor = str(row.get('Vendor', ''))[:25]
-            product_type = str(row.get('Product Type*', ''))[:25]
-            accepted_date = str(row.get('Accepted Date', ''))[:15]
-            
-            # Fill cells
-            table_row.cells[0].text = product_name
-            table_row.cells[1].text = barcode
-            table_row.cells[2].text = quantity
-            table_row.cells[3].text = vendor
-            table_row.cells[4].text = product_type
-            table_row.cells[5].text = accepted_date
-            
-            # Set font size for all cells in this row
-            for cell in table_row.cells:
-                for paragraph in cell.paragraphs:
-                    for run in paragraph.runs:
-                        run.font.size = Pt(10)
-        
-        # Add spacing after table
-        doc.add_paragraph()
-        
-        # Add footer
-        footer_para = doc.add_paragraph()
-        footer_run = footer_para.add_run(f"Total Items: {len(selected_df)}")
-        footer_run.font.size = Pt(10)
-        footer_run.font.italic = True
-        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
-        # Save document with unique name
-        now = datetime.now().strftime("%Y%m%d_%H%M%S")
-        outname = f"inventory_slip_robust_{now}.docx"
+        # Create filename
+        today_date = datetime.now().strftime("%Y%m%d")
+        outname = f"{today_date}_{vendor_name}_OrderSheet.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
+
+        # Create new document with landscape orientation first
+        doc = Document()
+        section = doc.sections[0]
+        section.orientation = WD_ORIENT.LANDSCAPE
+        section.page_width = Inches(11)
+        section.page_height = Inches(8.5)
         
-        if status_callback:
-            status_callback("Saving robust document...")
+        # Set margins
+        section.left_margin = Inches(0.5)
+        section.right_margin = Inches(0.5)
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.5)
+
+        # Add title
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.add_run("Order Sheet")
+        run.bold = True
+        run.font.size = Pt(14)
+
+        # Add date and vendor info
+        info = doc.add_paragraph()
+        run = info.add_run(f"Date: {today_date}    Vendor: {vendor_name}")
+        run.font.size = Pt(11)
+
+        # Create table with proper dimensions
+        table = doc.add_table(rows=1, cols=6)
+        table.style = 'Table Grid'
+        table.autofit = False  # Prevent autofit to keep our dimensions
+
+        # Set column widths proportionally
+        widths = [4, 2, 1, 2, 2, 2]  # Total = 13 inches
+        total_width = sum(widths)
+        page_width = 10  # Actual usable width after margins
         
-        # Save with error handling
-        try:
-            doc.save(outpath)
+        for i, width in enumerate(widths):
+            for cell in table.columns[i].cells:
+                cell.width = Inches(width * page_width / total_width)
+
+        # Add headers
+        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Product Type', 'Accepted Date']
+        for i, header in enumerate(headers):
+            cell = table.cell(0, i)
+            paragraph = cell.paragraphs[0]
+            run = paragraph.add_run(header)
+            run.bold = True
+            run.font.size = Pt(11)
+
+        # Add data rows with pagination
+        rows_per_page = 20  # Adjust based on page size and margins
+        current_row = 0
+        
+        for _, row in selected_df.iterrows():
+            if current_row > 0 and current_row % rows_per_page == 0:
+                doc.add_page_break()
+                # Add header row in new page
+                table = doc.add_table(rows=1, cols=6)
+                table.style = 'Table Grid'
+                table.autofit = False
+                
+                # Set column widths for new table
+                for i, width in enumerate(widths):
+                    for cell in table.columns[i].cells:
+                        cell.width = Inches(width * page_width / total_width)
+                
+                # Add headers to new page
+                for i, header in enumerate(headers):
+                    cell = table.cell(0, i)
+                    paragraph = cell.paragraphs[0]
+                    run = paragraph.add_run(header)
+                    run.bold = True
+                    run.font.size = Pt(11)
+
+            row_cells = table.add_row().cells
+            data = [
+                str(row.get('Product Name*', ''))[:100],
+                str(row.get('Barcode*', ''))[:50],
+                str(row.get('Quantity Received*', ''))[:15],
+                str(row.get('Vendor', ''))[:50],
+                str(row.get('Product Type*', ''))[:50],
+                str(row.get('Accepted Date', ''))[:15]
+            ]
             
-            # Verify the file was created and has content
-            if not os.path.exists(outpath):
-                raise ValueError("Document file was not created")
+            for i, value in enumerate(data):
+                paragraph = row_cells[i].paragraphs[0]
+                run = paragraph.add_run(value)
+                run.font.size = Pt(10)
             
-            file_size = os.path.getsize(outpath)
-            if file_size < 1000:
-                raise ValueError(f"Document file is too small: {file_size} bytes")
-            
-            if status_callback:
-                status_callback("Robust document created successfully!")
-            
+            current_row += 1
+
+        # Save document
+        doc.save(outpath)
+        
+        if os.path.exists(outpath):
             return True, outpath
             
-        except Exception as save_error:
-            logger.error(f"Error saving robust document: {save_error}")
-            return False, f"Error saving document: {save_error}"
-        
+        return False, "Failed to create document"
+
     except Exception as e:
         logger.error(f"Error in create_robust_inventory_slip: {str(e)}")
+        if os.path.exists(outpath):
+            try:
+                os.remove(outpath)
+            except:
+                pass
         return False, str(e)
 
 @app.route('/paste-json', methods=['POST'])
@@ -1587,15 +1590,6 @@ def validate_api_key():
         config = load_config()
         client = APIClient(api_type, {'API': {f'{api_type}_key': api_key}})
         
-        # Try to make a test request
-        if api_type == 'bamboo':
-            client.make_request('status')
-        elif api_type == 'cultivera':
-            client.make_request('health')
-        elif api_type == 'growflow':
-            client.make_request('ping')
-        
-        # If we get here, the key is valid
         if 'API' not in config:
             config['API'] = {}
         config['API'][f'{api_type}_key'] = api_key
@@ -1730,6 +1724,10 @@ def index():
 def search_json_or_api():
     """Handle both JSON paste and API URL functionality"""
     try:
+        search_input = request.form.get('search_input', '').strip()
+        
+        if not search_input:
+            flash('Please enter JSON data or an API URL.')
         search_input = request.form.get('search_input', '').strip()
         
         if not search_input:

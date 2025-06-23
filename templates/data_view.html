@@ -64,8 +64,8 @@
             <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
           </button>
           <button class="btn btn-info btn-lg" onclick="generateRobustSlips()" 
-                  title="Generate robust inventory slips (more reliable)">
-            <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Robust Slips
+                  title="Generate Order Sheets (more reliable)">
+            <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Order Sheet
           </button>
           <p style="color: white;" class="text-muted mt-2 mb-0">
             <small>Select products from the table below, then click one of the generate buttons above</small>
@@ -292,7 +292,7 @@ function generateRobustSlips() {
     if (progressModal) {
         progressModal.show();
     }
-    updateProgress(0, 'Starting robust generation...');
+    updateProgress(0, 'Starting Order Sheet generation...');
 
     // Create form data
     const formData = new FormData();
@@ -310,7 +310,7 @@ function generateRobustSlips() {
         }
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = 'inventory_slips_robust.docx';
+        let filename = 'order_sheet.docx';
         if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
             if (filenameMatch && filenameMatch[1]) {
@@ -322,7 +322,7 @@ function generateRobustSlips() {
         });
     })
     .then(function(data) {
-        updateProgress(100, 'Robust generation complete!');
+        updateProgress(100, 'Order Sheet generation complete!');
         // Create download link
         const url = window.URL.createObjectURL(data.blob);
         const a = document.createElement('a');
@@ -342,7 +342,7 @@ function generateRobustSlips() {
         if (progressModal) {
             progressModal.hide();
         }
-        alert('Error generating robust slips: ' + error.message);
+        alert('Error generating Order Sheet: ' + error.message);
     });
 }
 
