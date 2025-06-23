@@ -952,18 +952,33 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
             if current_row > 0 and current_row % rows_per_page == 0:
                 doc.add_page_break()
                 # Add header row in new page
+                # Create table with proper dimensions
                 table = doc.add_table(rows=1, cols=6)
                 table.style = 'Table Grid'
-                table.autofit = True
-                
-                # Set column widths proportionally
-                widths = [4.5, 2, 0.2, 2, 2, 1.75]  # Adjusted widths - reduced quantity column to 0.75
+                table.autofit = False  # Keep autofit false for manual width control
+
+                # Set column widths proportionally for better fit
+                widths = [6, 3, 0.5, 1, 1, 1.5]  # Adjusted widths - first two columns wider, others narrower
                 total_width = sum(widths)
                 page_width = 10  # Actual usable width after margins
 
+                # Apply widths to first table
                 for i, width in enumerate(widths):
                     for cell in table.columns[i].cells:
                         cell.width = Inches(width * page_width / total_width)
+
+                # When creating new tables for additional pages, use the same settings
+                if current_row > 0 and current_row % rows_per_page == 0:
+                    doc.add_page_break()
+                    table = doc.add_table(rows=1, cols=6)
+                    table.style = 'Table Grid'
+                    table.autofit = False  # Keep autofit false for consistent width control
+                    
+                    # Apply same widths to new table
+                    for i, width in enumerate(widths):
+                        for cell in table.columns[i].cells:
+                            cell.width = Inches(width * page_width / total_width)
+                current_row += 1
                 
                 # Add headers to new page
                 for i, header in enumerate(headers):
@@ -973,15 +988,14 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                     run.bold = True
                     run.font.size = Pt(11)
 
-            row_cells = table.add_row().cells
-            data = [
-                str(row.get('Product Name*', ''))[:100],
-                str(row.get('Barcode*', ''))[:50],
-                str(row.get('Quantity Received*', ''))[:15],
-                str(row.get('Vendor', ''))[:50],
-                str(row.get('Product Type*', ''))[:50],
-                str(row.get('Accepted Date', ''))[:15]
-            ]
+                data = [
+                    str(row.get('Product Name*', ''))[:150],    # Increased length for product name
+                    str(row.get('Barcode*', ''))[:75],          # Increased length for barcode
+                    str(row.get('Quantity Received*', ''))[:5],  # Shortened for quantity
+                    str(row.get('Vendor', ''))[:25],            # Shortened for vendor
+                    str(row.get('Product Type*', ''))[:25],     # Shortened for product type
+                    str(row.get('Accepted Date', ''))[:10]      # Shortened for date
+                ]
             
             for i, value in enumerate(data):
                 paragraph = row_cells[i].paragraphs[0]
