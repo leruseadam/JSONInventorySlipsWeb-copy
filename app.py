@@ -994,7 +994,6 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                 str(row.get('Barcode*', ''))[:50],
                 str(row.get('Quantity Received*', ''))[:5],
                 str(row.get('Vendor', ''))[:20],
-                str(row.get('Product Type*', ''))[:50],
                 str(row.get('Accepted Date', ''))[:10]
             ]
             
