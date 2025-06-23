@@ -954,10 +954,10 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
                 # Add header row in new page
                 table = doc.add_table(rows=1, cols=6)
                 table.style = 'Table Grid'
-                table.autofit = False
+                table.autofit = True
                 
                 # Set column widths proportionally
-                widths = [4.5, 2, 0.75, 2, 2, 1.75]  # Adjusted widths - reduced quantity column to 0.75
+                widths = [4.5, 2, 0.2, 2, 2, 1.75]  # Adjusted widths - reduced quantity column to 0.75
                 total_width = sum(widths)
                 page_width = 10  # Actual usable width after margins
 
