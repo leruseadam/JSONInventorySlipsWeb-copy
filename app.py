@@ -56,24 +56,115 @@ from src.utils.document_handler import DocumentHandler
 from src.ui.app import InventorySlipGenerator
 
 
-import sys
-def compress_session_data(data):
-    """Compress data for session storage"""
-    if isinstance(data, str):
-        compressed = zlib.compress(data.encode('utf-8'))
-    else:
-        compressed = zlib.compress(json.dumps(data).encode('utf-8'))
-    return base64.b64encode(compressed).decode('utf-8')
+# Update the compression constants
+MAX_CHUNK_SIZE = 500  # Reduced from 800 to be safer
+MAX_TOTAL_SIZE = 3000  # Maximum total size after compression
+COMPRESSION_LEVEL = 9  # Maximum compression
 
-def decompress_session_data(compressed_data):
-    """Decompress data from session storage"""
-    if not compressed_data:
-        return None
+def compress_session_data(data):
+    """Compress data with improved compression and size checks"""
     try:
-        decompressed = zlib.decompress(base64.b64decode(compressed_data))
-        return json.loads(decompressed)
+        # Convert DataFrame to minimal JSON if needed
+        if isinstance(data, pd.DataFrame):
+            data = data.to_json(orient='records', date_format='iso')
+        elif not isinstance(data, str):
+            data = json.dumps(data, separators=(',', ':'))
+
+        # First level compression
+        compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+        
+        # If still too large, reduce data
+        if len(compressed) > MAX_TOTAL_SIZE:
+            if isinstance(data, str):
+                try:
+                    # Parse JSON to reduce content
+                    parsed = json.loads(data)
+                    if isinstance(parsed, list):
+                        # Keep only essential fields and limit records
+                        reduced = []
+                        for item in parsed[:25]:  # Limit to 25 records
+                            reduced_item = {k: str(v)[:50] for k, v in item.items()}  # Truncate values
+                            reduced.append(reduced_item)
+                        data = json.dumps(reduced, separators=(',', ':'))
+                    elif isinstance(parsed, dict):
+                        # Reduce dictionary size
+                        data = json.dumps({k: str(v)[:50] for k, v in parsed.items()})
+                except:
+                    # If JSON parsing fails, truncate string
+                    data = data[:1000] + "...[truncated]"
+            
+            # Compress reduced data
+            compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+
+        return base64.b64encode(compressed).decode('utf-8')
     except Exception as e:
-        logger.error(f"Failed to decompress session data: {str(e)}")
+        logger.error(f"Compression error: {str(e)}")
+        raise
+
+def store_chunked_data(key, data):
+    """Store data with improved chunking and size validation"""
+    try:
+        # Compress data first
+        compressed = compress_session_data(data)
+        
+        # Clear existing chunks
+        clear_chunked_data(key)
+        
+        # Split into smaller chunks
+        chunks = [compressed[i:i + MAX_CHUNK_SIZE] for i in range(0, len(compressed), MAX_CHUNK_SIZE)]
+        
+        if len(chunks) > 20:  # Limit number of chunks
+            raise ValueError(f"Data too large: {len(chunks)} chunks needed")
+        
+        # Store chunks with size validation
+        session[f'{key}_chunks'] = len(chunks)
+        for i, chunk in enumerate(chunks):
+            chunk_key = f'{key}_chunk_{i}'
+            if len(chunk) > MAX_CHUNK_SIZE:
+                raise ValueError(f"Chunk {i} exceeds maximum size")
+            session[chunk_key] = chunk
+            
+        logger.info(f"Stored {len(chunks)} chunks for {key} (total size: {len(compressed)})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error storing chunked data: {str(e)}")
+        clear_chunked_data(key)  # Clean up on error
+        return False
+
+def get_chunked_data(key):
+    """Retrieve chunked data with improved error handling"""
+    try:
+        num_chunks = session.get(f'{key}_chunks')
+        if num_chunks is None:
+            return None
+            
+        # Validate chunk count
+        if num_chunks > 20:  # Safety check
+            logger.error(f"Too many chunks for {key}: {num_chunks}")
+            return None
+            
+        # Reconstruct data
+        chunks = []
+        for i in range(num_chunks):
+            chunk = session.get(f'{key}_chunk_{i}')
+            if chunk is None or len(chunk) > MAX_CHUNK_SIZE:
+                logger.error(f"Invalid chunk {i} for {key}")
+                return None
+            chunks.append(chunk)
+            
+        # Combine and decompress
+        encoded_data = ''.join(chunks)
+        try:
+            compressed = base64.b64decode(encoded_data)
+            decompressed = zlib.decompress(compressed)
+            return decompressed.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Decompression error: {str(e)}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error retrieving chunked data: {str(e)}")
         return None
 
 # Configure logging
@@ -760,92 +851,65 @@ def limit_dataframe_for_session(df, max_rows=25):
     return df
 
 def store_chunked_data(key, data):
-    """Store data in smaller chunks in the session with better compression"""
+    """Store data with improved chunking and size validation"""
     try:
-        # Convert data to string if it's a DataFrame
-        if isinstance(data, pd.DataFrame):
-            # Limit DataFrame size for session storage
-            data = limit_dataframe_for_session(data)
-            # Convert to JSON with minimal formatting to reduce size
-            data = data.to_json(orient='records', date_format='iso')
-        elif not isinstance(data, str):
-            # Ensure it's a string
-            data = json.dumps(data, separators=(',', ':'))
+        # Compress data first
+        compressed = compress_session_data(data)
         
-        # Ensure data is a string
-        if not isinstance(data, str):
-            data = str(data)
+        # Clear existing chunks
+        clear_chunked_data(key)
         
-        # For raw_json, only store essential metadata to reduce size
-        if key == 'raw_json' and len(data) > 2000:
-            # For large raw data, only store a summary
-            try:
-                parsed = json.loads(data) if isinstance(data, str) else data
-                if isinstance(parsed, dict):
-                    # Store only key metadata
-                    summary = {
-                        'type': 'summary',
-                        'keys': list(parsed.keys())[:5],  # First 5 keys
-                        'size': len(data)
-                    }
-                    data = json.dumps(summary, separators=(',', ':'))
-                else:
-                    # For lists, store count and first item
-                    summary = {
-                        'type': 'list_summary',
-                        'count': len(parsed) if isinstance(parsed, list) else 0,
-                        'size': len(data)
-                    }
-                    data = json.dumps(summary, separators=(',', ':'))
-            except:
-                # If parsing fails, truncate the data
-                data = data[:1000] + "...[truncated]"
+        # Split into smaller chunks
+        chunks = [compressed[i:i + MAX_CHUNK_SIZE] for i in range(0, len(compressed), MAX_CHUNK_SIZE)]
         
-        # Compress the data first to reduce size
-        compressed = zlib.compress(data.encode('utf-8'), level=9)
-        encoded = base64.b64encode(compressed).decode('utf-8')
+        if len(chunks) > 20:  # Limit number of chunks
+            raise ValueError(f"Data too large: {len(chunks)} chunks needed")
         
-        # Use even smaller chunk size to stay well within cookie limits
-        chunk_size = 800  # Further reduced to ensure cookie size compliance
-        chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
-        
-        # Store number of chunks
+        # Store chunks with size validation
         session[f'{key}_chunks'] = len(chunks)
-        
-        # Store each chunk with index
         for i, chunk in enumerate(chunks):
-            session[f'{key}_chunk_{i}'] = chunk
+            chunk_key = f'{key}_chunk_{i}'
+            if len(chunk) > MAX_CHUNK_SIZE:
+                raise ValueError(f"Chunk {i} exceeds maximum size")
+            session[chunk_key] = chunk
             
-        logger.info(f"Stored {len(chunks)} chunks in session for {key} (total size: {len(encoded)} chars)")
+        logger.info(f"Stored {len(chunks)} chunks for {key} (total size: {len(compressed)})")
         return True
+        
     except Exception as e:
         logger.error(f"Error storing chunked data: {str(e)}")
+        clear_chunked_data(key)  # Clean up on error
         return False
 
 def get_chunked_data(key):
-    """Retrieve and reconstruct data from chunks"""
+    """Retrieve chunked data with improved error handling"""
     try:
         num_chunks = session.get(f'{key}_chunks')
         if num_chunks is None:
-            logger.warning(f"No chunks found for key: {key}")
             return None
             
-        # Reconstruct data from chunks
-        encoded_data = ''
+        # Validate chunk count
+        if num_chunks > 20:  # Safety check
+            logger.error(f"Too many chunks for {key}: {num_chunks}")
+            return None
+            
+        # Reconstruct data
+        chunks = []
         for i in range(num_chunks):
             chunk = session.get(f'{key}_chunk_{i}')
-            if chunk is None:
-                logger.error(f"Missing chunk {i} for {key}")
+            if chunk is None or len(chunk) > MAX_CHUNK_SIZE:
+                logger.error(f"Invalid chunk {i} for {key}")
                 return None
-            encoded_data += chunk
-        
-        # Decompress the data
+            chunks.append(chunk)
+            
+        # Combine and decompress
+        encoded_data = ''.join(chunks)
         try:
-            compressed_data = base64.b64decode(encoded_data)
-            decompressed = zlib.decompress(compressed_data)
+            compressed = base64.b64decode(encoded_data)
+            decompressed = zlib.decompress(compressed)
             return decompressed.decode('utf-8')
         except Exception as e:
-            logger.error(f"Error decompressing data: {str(e)}")
+            logger.error(f"Decompression error: {str(e)}")
             return None
             
     except Exception as e:
@@ -1108,16 +1172,6 @@ def load_url():
         # Store new data in chunks
         if not store_chunked_data('df_json', result_df):
             raise Exception("Failed to store DataFrame")
-            
-        # Only store raw data if it's small enough
-        if raw_data and len(str(raw_data)) < 2000:
-            if not store_chunked_data('raw_json', raw_data):
-                logger.warning("Failed to store raw data, but continuing...")
-        else:
-            logger.info("Raw data too large, storing summary only")
-            summary = {"type": "large_data", "format": format_type}
-            store_chunked_data('raw_json', summary)
-        
         return redirect(url_for('data_view'))
         
     except Exception as e:
