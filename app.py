@@ -1910,8 +1910,29 @@ if __name__ == '__main__':
         for port in ports:
             try:
                 print(f"Attempting to start server on port {port}...")
-                # Open browser after slight delay to ensure server is running
-                threading.Timer(1.5, lambda p=port: webbrowser.open(f'http://localhost:{p}')).start()
+                
+                # Open browser with more reliable method
+                def open_browser():
+                    try:
+                        # Try Chrome first with --new-window flag
+                        chrome_path = ""
+                        if sys.platform == "darwin":  # macOS
+                            chrome_path = 'open -a /Applications/Google\ Chrome.app %s'
+                        elif sys.platform == "win32":  # Windows
+                            chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
+                        
+                        url = f'http://localhost:{port}'
+                        if chrome_path:
+                            webbrowser.get(chrome_path).open(url, new=2)
+                        else:
+                            webbrowser.open(url, new=2)
+                    except Exception as e:
+                        print(f"Error opening browser: {e}")
+                        # Fallback to default browser
+                        webbrowser.open(f'http://localhost:{port}', new=2)
+
+                # Delay browser opening slightly
+                threading.Timer(2.0, open_browser).start()
                 
                 app.run(
                     host='localhost',
