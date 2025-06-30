@@ -42,26 +42,17 @@
                                 <label for="output_dir" class="form-label">Output Directory</label>
                                 <div class="input-group">
                                     <input type="text" class="form-control" id="output_dir" name="output_dir" 
-<<<<<<< HEAD
                                            value="{{ config['PATHS']['output_dir'] }}" readonly>
-=======
-                                           value="/Users/Home/Downloads" readonly>
->>>>>>> d611031 (commit)
                                     <button type="button" class="btn btn-info" onclick="browseDirectory()">
                                         <i class="fas fa-folder-open"></i> Browse
                                     </button>
                                 </div>
-<<<<<<< HEAD
                                 <small class="form-text text-muted">
                                     Default: Downloads folder
                                 </small>
                             </div>
                         </div>
                     </div>
-=======
-                            </div>
-                        </div>
->>>>>>> d611031 (commit)
                     
                     <!-- API Settings -->
                     <div class="card mb-4">
@@ -92,18 +83,9 @@
 
 {% block scripts %}
 <script>
-<<<<<<< HEAD
     // Preview theme changes
     document.getElementById('theme').addEventListener('change', function() {
         alert('Theme changes will be applied after saving settings and refreshing the page.');
-=======
-    // Live theme switching
-    document.getElementById('theme').addEventListener('change', function(e) {
-        const theme = e.target.value;
-        document.documentElement.setAttribute('data-theme', theme);
-        // Optionally, show a message
-        // alert('Theme changed! Remember to save settings to make it permanent.');
->>>>>>> d611031 (commit)
     });
 
     async function browseDirectory() {

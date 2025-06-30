@@ -183,83 +183,13 @@
             background-color: var(--accent-color);
             border-color: var(--accent-color);
         }
-<<<<<<< HEAD
-=======
-
-        header {
-            position: relative;
-            width: 100%;
-            min-height: 140px;
-        }
-
-        .header-logo {
-            position: relative;
-            z-index: 1;
-            margin-top: 24px;
-        }
-
-        .header-face {
-            height: 110px;
-            width: auto;
-            margin-right: 32px;
-            align-self: flex-end;
-        }
-
-        .waves-bg {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 140px;
-            z-index: 0;
-            overflow: hidden;
-            pointer-events: none;
-        }
-
-        .waves-bg img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-        }
-
-        .header-waves-bg {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 140px;
-            object-fit: cover;
-            z-index: 0;
-            pointer-events: none;
-        }
-
-        .header-logo-container {
-            position: relative;
-            z-index: 1;
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            align-items: flex-end;
-            min-height: 140px;
-        }
->>>>>>> d611031 (commit)
     </style>
     {% block extra_css %}{% endblock %}
     {% block head %}{% endblock %}
 </head>
 <body oncontextmenu="return true;">
-<<<<<<< HEAD
     <header>
         <img src="{{ url_for('static', filename='images/logo.png') }}" alt="logo" class="header-logo">
-=======
-    <header style="position: relative; width: 100%; min-height: 140px;">
-        <img src="{{ url_for('static', filename='images/waves-bg.png') }}" alt="Waves background" class="header-waves-bg">
-        <div class="header-logo-container">
-            <img src="{{ url_for('static', filename='images/face.png') }}" alt="face" class="header-face" style="height: 110px; width: auto; margin-right: 32px; align-self: flex-end;">
-            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="logo" class="header-logo">
-        </div>
->>>>>>> d611031 (commit)
     </header>
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container">

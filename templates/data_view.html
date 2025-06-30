@@ -61,11 +61,7 @@
         <div class="card-body text-center">
           <button class="btn btn-success btn-lg me-3" onclick="generateSlips()" 
                   title="Generate inventory slips for selected products">
-<<<<<<< HEAD
             <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
-=======
-            <i class="fas fa-clipboard-list" aria-hidden="true"></i> Generate Inventory Slips
->>>>>>> d611031 (commit)
           </button>
           <button class="btn btn-info btn-lg" onclick="generateRobustSlips()" 
                   title="Generate Order Sheets (more reliable)">
@@ -95,17 +91,12 @@
           </div>
         </div>
         <div class="card-body">
-<<<<<<< HEAD
-          <div class="table-responsive">
-            <table class="table table-hover">
-=======
           <div class="alert alert-info mb-3 table-tip-alert" style="font-size: 0.95em;">
             <i class="fas fa-arrows-alt-v"></i>
             <strong>Tip:</strong> You can reorder products in the table below by dragging and dropping the rows.
           </div>
           <div class="table-responsive">
             <table class="table table-hover table-inventory">
->>>>>>> d611031 (commit)
               <thead>
                 <tr>
                   <th>
@@ -118,24 +109,6 @@
                   <th>Source</th>
                 </tr>
               </thead>
-<<<<<<< HEAD
-              <tbody>
-                {% for product in products %}
-                <tr>
-                  <td>
-                    <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name }}">
-                  </td>
-                  <td>{{ product.name }}</td>
-                  <td>{{ product.strain }}</td>
-                  <td>{{ product.sku }}</td>
-                  <td>{{ product.quantity }}</td>
-                  <td>
-                    <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
-                      {{ product.source }}
-                    </span>
-                  </td>
-                </tr>
-=======
               <tbody id="productsTableBody">
                 {% for group in range((products|length + 3) // 4) %}
                   <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group }}">
@@ -163,7 +136,6 @@
                       </tr>
                     {% endif %}
                   {% endfor %}
->>>>>>> d611031 (commit)
                 {% endfor %}
               </tbody>
             </table>
@@ -216,8 +188,6 @@ document.addEventListener('DOMContentLoaded', function() {
     if (generateSection) {
         generateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-<<<<<<< HEAD
-=======
 
     // Remove any drag event listeners from rows that should not be draggable
     document.querySelectorAll('#productsTableBody tr.group-product-row').forEach(row => {
@@ -242,29 +212,20 @@ document.addEventListener('DOMContentLoaded', function() {
             row.addEventListener('dragend', handleDragEnd);
         }
     });
->>>>>>> d611031 (commit)
 });
     
 function selectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
         checkbox.checked = true;
     });
-<<<<<<< HEAD
-    document.getElementById('selectAllCheckbox').checked = true;
-=======
     updateSelectAllCheckbox();
->>>>>>> d611031 (commit)
 }
     
 function deselectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
         checkbox.checked = false;
     });
-<<<<<<< HEAD
-    document.getElementById('selectAllCheckbox').checked = false;
-=======
     updateSelectAllCheckbox();
->>>>>>> d611031 (commit)
 }
 
 function filterProducts() {
@@ -424,8 +385,6 @@ function generateRobustSlips() {
     });
 }
 
-<<<<<<< HEAD
-=======
 function updateSelectAllCheckbox() {
     const selectAllCheckbox = document.getElementById('selectAllCheckbox');
     if (selectAllCheckbox) {
@@ -434,7 +393,6 @@ function updateSelectAllCheckbox() {
     }
 }
 
->>>>>>> d611031 (commit)
 // Handle select all checkbox
 document.addEventListener('DOMContentLoaded', function() {
     const selectAllCheckbox = document.getElementById('selectAllCheckbox');
@@ -574,9 +532,6 @@ function openDownloads() {
             alert('Error opening downloads folder: ' + error.message);
         });
 }
-<<<<<<< HEAD
-</script>
-=======
 
 // Drag and Drop for table rows
 const tableBody = document.getElementById('productsTableBody');
@@ -769,7 +724,7 @@ function handleGroupDrop(e) {
             newHeader.className = 'table-group-header bg-light group-draggable';
             newHeader.setAttribute('draggable', 'true');
             newHeader.setAttribute('data-group', currentGroup);
-            newHeader.innerHTML = `<td colspan="6" style="font-weight:bold; background:#f9f9fa; border-top:2px solid #dee2e6; cursor:move;">Group ${currentGroup + 1}</td>`;
+            newHeader.innerHTML = `<td colspan="6" style="font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;">Group ${currentGroup + 1}</td>`;
             newOrder.push(newHeader);
             for (let i = 0; i < 4 && buffer.length > 0; i++) {
                 let row = buffer.shift();
@@ -860,5 +815,4 @@ document.addEventListener('DOMContentLoaded', function() {
     max-width: 420px;
 }
 </style>
->>>>>>> d611031 (commit)
 {% endblock %}
