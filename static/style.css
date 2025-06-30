@@ -5,6 +5,77 @@ body {
     font-family: 'Segoe UI', Arial, sans-serif;
     margin: 0;
     padding: 0;
+<<<<<<< HEAD
+=======
+    padding-top: 0; /* Remove top padding from body */
+}
+
+/* Header styles */
+header {
+    position: relative;
+    left: 0;
+    width: 100vw;
+    min-height: 220px;
+    margin: 0;
+    padding: 0;
+    z-index: 1000;
+    overflow: hidden;
+    background: none;
+    box-sizing: border-box;
+}
+
+.header-waves-bg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    min-width: 100vw;
+    height: 220px;
+    min-height: 220px;
+    object-fit: cover;
+    z-index: 0;
+    pointer-events: none;
+    transform: scale(1.5); /* Zoom out the background image a bit */
+    left: 50%;
+    transform-origin: top center;
+
+}
+
+.header-logo-container {
+    position: relative;
+    z-index: 1;
+    width: 100vw;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    min-height: 220px;
+    /* Remove gap, no longer needed */
+}
+
+.header-logo {
+    margin-top: 0;
+    margin-left: 0;
+    margin-right: 0;
+    align-self: flex-end;
+}
+
+.header-face {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    header, .header-waves-bg, .header-logo-container {
+        min-height: 120px;
+        height: 120px;
+    }
+    .header-waves-bg {
+        height: 120px;
+        min-height: 120px;
+    }
+    .header-logo-container {
+        min-height: 120px;
+    }
+>>>>>>> d611031 (commit)
 }
 
 /* Card styles */
@@ -109,9 +180,16 @@ hr {
 
 /* Logo */
 img[alt="logo"] {
+<<<<<<< HEAD
     display: block;
     margin: 24px auto 0 auto;
     max-width: 180px;
+=======
+    display: inline;
+    margin: 0;
+    max-width: 220px; /* Reduced from 360px */
+    width: 100%;
+>>>>>>> d611031 (commit)
     height: auto;
 }
 
@@ -282,4 +360,10 @@ textarea::placeholder {
 /* Optional: Add padding to the table for better visibility */
 .table-responsive {
     padding: 10px;
+<<<<<<< HEAD
 }
+=======
+}
+
+/* Example: /Users/Home/Downloads */
+>>>>>>> d611031 (commit)

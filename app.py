@@ -1425,7 +1425,7 @@ def generate_robust_slips_docx():
         
         if df_json is None:
             flash('No data available. Please load data first.')
-            return redirect(url_for('index'))
+            return redirect(url_for('data_view'))
         
         # Convert JSON to DataFrame
         try:
@@ -1959,7 +1959,7 @@ if __name__ == '__main__':
         cleanup_temp_files()
         
         # Try different ports in case default is taken
-        ports = [5001, 5002, 5003, 8000, 8001, 8080, 8081, 8888, 9000]
+        ports = [8000, 8001, 8080, 8081, 8888, 9000]
         
         for port in ports:
             try:

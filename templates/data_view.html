@@ -61,7 +61,11 @@
         <div class="card-body text-center">
           <button class="btn btn-success btn-lg me-3" onclick="generateSlips()" 
                   title="Generate inventory slips for selected products">
+<<<<<<< HEAD
             <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
+=======
+            <i class="fas fa-clipboard-list" aria-hidden="true"></i> Generate Inventory Slips
+>>>>>>> d611031 (commit)
           </button>
           <button class="btn btn-info btn-lg" onclick="generateRobustSlips()" 
                   title="Generate Order Sheets (more reliable)">
@@ -91,8 +95,17 @@
           </div>
         </div>
         <div class="card-body">
+<<<<<<< HEAD
           <div class="table-responsive">
             <table class="table table-hover">
+=======
+          <div class="alert alert-info mb-3 table-tip-alert" style="font-size: 0.95em;">
+            <i class="fas fa-arrows-alt-v"></i>
+            <strong>Tip:</strong> You can reorder products in the table below by dragging and dropping the rows.
+          </div>
+          <div class="table-responsive">
+            <table class="table table-hover table-inventory">
+>>>>>>> d611031 (commit)
               <thead>
                 <tr>
                   <th>
@@ -105,6 +118,7 @@
                   <th>Source</th>
                 </tr>
               </thead>
+<<<<<<< HEAD
               <tbody>
                 {% for product in products %}
                 <tr>
@@ -121,6 +135,35 @@
                     </span>
                   </td>
                 </tr>
+=======
+              <tbody id="productsTableBody">
+                {% for group in range((products|length + 3) // 4) %}
+                  <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group }}">
+                    <td colspan="6" style="font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;">
+                      Group {{ group + 1 }}
+                    </td>
+                  </tr>
+                  {% for i in range(4) %}
+                    {% set idx = group * 4 + i %}
+                    {% if idx < products|length %}
+                      {% set product = products[idx] %}
+                      <tr class="group-product-row" data-index="{{ idx }}" data-group="{{ group }}" draggable="true">
+                        <td>
+                          <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name }}">
+                        </td>
+                        <td>{{ product.name | replace('Medically Compliant - ', '') }}</td>
+                        <td>{{ product.strain }}</td>
+                        <td>{{ product.sku }}</td>
+                        <td>{{ product.quantity }}</td>
+                        <td>
+                          <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
+                            {{ product.source }}
+                          </span>
+                        </td>
+                      </tr>
+                    {% endif %}
+                  {% endfor %}
+>>>>>>> d611031 (commit)
                 {% endfor %}
               </tbody>
             </table>
@@ -173,20 +216,55 @@ document.addEventListener('DOMContentLoaded', function() {
     if (generateSection) {
         generateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+<<<<<<< HEAD
+=======
+
+    // Remove any drag event listeners from rows that should not be draggable
+    document.querySelectorAll('#productsTableBody tr.group-product-row').forEach(row => {
+        const idx = parseInt(row.getAttribute('data-index'));
+        const group = parseInt(row.getAttribute('data-group'));
+        if (!isNaN(idx) && !isNaN(group) && (idx - group * 4) > 3) {
+            row.setAttribute('draggable', 'false');
+            row.style.opacity = '0.5';
+            row.style.pointerEvents = 'none';
+            row.classList.add('not-draggable');
+        } else {
+            // Only attach drag event listeners to draggable rows
+            row.setAttribute('draggable', 'true');
+            row.style.opacity = '';
+            row.style.pointerEvents = '';
+            row.classList.remove('not-draggable');
+            row.addEventListener('dragstart', handleDragStart);
+            row.addEventListener('dragover', handleDragOver);
+            row.addEventListener('dragenter', handleDragEnter);
+            row.addEventListener('dragleave', handleDragLeave);
+            row.addEventListener('drop', handleDrop);
+            row.addEventListener('dragend', handleDragEnd);
+        }
+    });
+>>>>>>> d611031 (commit)
 });
     
 function selectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
         checkbox.checked = true;
     });
+<<<<<<< HEAD
     document.getElementById('selectAllCheckbox').checked = true;
+=======
+    updateSelectAllCheckbox();
+>>>>>>> d611031 (commit)
 }
     
 function deselectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
         checkbox.checked = false;
     });
+<<<<<<< HEAD
     document.getElementById('selectAllCheckbox').checked = false;
+=======
+    updateSelectAllCheckbox();
+>>>>>>> d611031 (commit)
 }
 
 function filterProducts() {
@@ -346,6 +424,17 @@ function generateRobustSlips() {
     });
 }
 
+<<<<<<< HEAD
+=======
+function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    if (selectAllCheckbox) {
+        const allChecked = Array.from(document.querySelectorAll('.product-checkbox')).every(cb => cb.checked);
+        selectAllCheckbox.checked = allChecked;
+    }
+}
+
+>>>>>>> d611031 (commit)
 // Handle select all checkbox
 document.addEventListener('DOMContentLoaded', function() {
     const selectAllCheckbox = document.getElementById('selectAllCheckbox');
@@ -485,5 +574,291 @@ function openDownloads() {
             alert('Error opening downloads folder: ' + error.message);
         });
 }
+<<<<<<< HEAD
 </script>
+=======
+
+// Drag and Drop for table rows
+const tableBody = document.getElementById('productsTableBody');
+let dragSrcRow = null;
+
+function handleDragStart(e) {
+    if (this.getAttribute('draggable') === 'false' || this.classList.contains('not-draggable')) {
+        e.preventDefault();
+        return false;
+    }
+    dragSrcRow = this;
+    this.style.opacity = '0.4';
+}
+
+function handleDragOver(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    return false;
+}
+
+function handleDragEnter(e) {
+    this.classList.add('drag-over');
+}
+
+function handleDragLeave(e) {
+    this.classList.remove('drag-over');
+}
+
+function handleDrop(e) {
+    if (e.stopPropagation) {
+        e.stopPropagation();
+    }
+    if (dragSrcRow !== this) {
+        const tbody = document.getElementById('productsTableBody');
+        const droppedGroup = this.getAttribute('data-group');
+        const fromGroup = dragSrcRow.getAttribute('data-group');
+        let groupNum = parseInt(droppedGroup);
+        // Insert the dragged row before the drop target and update its group
+        this.parentNode.insertBefore(dragSrcRow, this);
+        dragSrcRow.setAttribute('data-group', droppedGroup);
+        // --- Handle overflow in target group ---
+        let groupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${droppedGroup}']`));
+        if (groupRows.length > 4) {
+            let overflowRow = groupRows[4]; // 5th row (0-based)
+            let nextGroupNum = groupNum + 1;
+            while (overflowRow) {
+                let nextGroupHeader = tbody.querySelector(`.group-draggable[data-group='${nextGroupNum}']`);
+                if (!nextGroupHeader) {
+                    nextGroupHeader = document.createElement('tr');
+                    nextGroupHeader.className = 'table-group-header bg-light group-draggable';
+                    nextGroupHeader.setAttribute('draggable', 'true');
+                    nextGroupHeader.setAttribute('data-group', nextGroupNum);
+                    nextGroupHeader.innerHTML = `<td colspan=\"6\" style=\"font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;\">Group ${nextGroupNum + 1}</td>`;
+                    tbody.appendChild(nextGroupHeader);
+                }
+                let nextGroupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${nextGroupNum}']`));
+                overflowRow.setAttribute('data-group', nextGroupNum);
+                let afterHeader = nextGroupHeader.nextSibling;
+                tbody.insertBefore(overflowRow, afterHeader);
+                let updatedNextGroupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${nextGroupNum}']`));
+                if (updatedNextGroupRows.length > 4) {
+                    overflowRow = updatedNextGroupRows[4];
+                    nextGroupNum++;
+                } else {
+                    overflowRow = null;
+                }
+            }
+        }
+        // --- Handle underflow in source group ---
+        if (fromGroup !== droppedGroup) {
+            let fixGroup = parseInt(fromGroup);
+            let fix = true;
+            while (fix) {
+                let fixRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${fixGroup}']`));
+                let nextGroupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${fixGroup+1}']`));
+                if (fixRows.length < 4 && nextGroupRows.length > 0) {
+                    // Move the first row from the next group up
+                    let firstNext = nextGroupRows[0];
+                    firstNext.setAttribute('data-group', fixGroup);
+                    // Insert after the last row in the current group
+                    let lastFix = fixRows.length > 0 ? fixRows[fixRows.length-1] : tbody.querySelector(`.group-draggable[data-group='${fixGroup}']`);
+                    tbody.insertBefore(firstNext, lastFix.nextSibling);
+                    // Continue to next group
+                    fixGroup++;
+                } else {
+                    fix = false;
+                }
+            }
+            // Remove empty group headers at the end
+            let lastGroupNum = fixGroup;
+            while (true) {
+                let groupHeader = tbody.querySelector(`.group-draggable[data-group='${lastGroupNum}']`);
+                let groupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${lastGroupNum}']`));
+                if (groupHeader && groupRows.length === 0) {
+                    tbody.removeChild(groupHeader);
+                    lastGroupNum++;
+                } else {
+                    break;
+                }
+            }
+        }
+        updateSelectAllCheckbox();
+    }
+    return false;
+}
+
+function handleDragEnd(e) {
+    this.style.opacity = '';
+    document.querySelectorAll('#productsTableBody tr').forEach(row => {
+        row.classList.remove('drag-over');
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Drag and drop event listeners
+    document.querySelectorAll('#productsTableBody tr').forEach(row => {
+        row.addEventListener('dragstart', handleDragStart);
+        row.addEventListener('dragover', handleDragOver);
+        row.addEventListener('dragenter', handleDragEnter);
+        row.addEventListener('dragleave', handleDragLeave);
+        row.addEventListener('drop', handleDrop);
+        row.addEventListener('dragend', handleDragEnd);
+    });
+});
+
+// Drag and Drop for group rows
+let dragSrcGroup = null;
+
+function handleGroupDragStart(e) {
+    dragSrcGroup = this;
+    this.style.opacity = '0.4';
+}
+
+function handleGroupDragOver(e) {
+    if (e.preventDefault) e.preventDefault();
+    return false;
+}
+
+function handleGroupDrop(e) {
+    if (e.stopPropagation) e.stopPropagation();
+    if (dragSrcGroup !== this) {
+        const tbody = document.getElementById('productsTableBody');
+        const draggedGroup = dragSrcGroup.getAttribute('data-group');
+        const droppedGroup = this.getAttribute('data-group');
+        const draggedRows = Array.from(tbody.querySelectorAll(`[data-group='${draggedGroup}']`));
+        const droppedRows = Array.from(tbody.querySelectorAll(`[data-group='${droppedGroup}']`));
+        // Remove dragged group rows
+        draggedRows.forEach(row => tbody.removeChild(row));
+        // Insert before dropped group
+        tbody.insertBefore(dragSrcGroup, droppedRows[0]);
+        draggedRows.forEach(row => tbody.insertBefore(row, droppedRows[0]));
+
+        // --- Enforce strict groups of 4 ---
+        let groupHeaders = Array.from(tbody.querySelectorAll('.group-draggable'));
+        let allRows = Array.from(tbody.querySelectorAll('tr'));
+        let groupCount = groupHeaders.length;
+        let groupMap = {};
+        groupHeaders.forEach((header, i) => {
+            groupMap[i] = [header];
+        });
+        // Assign product rows to groups
+        allRows.forEach(row => {
+            if (!row.classList.contains('group-draggable')) {
+                let group = parseInt(row.getAttribute('data-group'));
+                if (!isNaN(group) && groupMap[group]) {
+                    groupMap[group].push(row);
+                }
+            }
+        });
+        // Re-balance groups
+        let newOrder = [];
+        let buffer = [];
+        for (let i = 0; i < groupCount; i++) {
+            let groupRows = groupMap[i] || [];
+            let header = groupRows[0];
+            let products = groupRows.slice(1);
+            // Add overflow to buffer
+            while (products.length > 4) {
+                buffer.push(products.pop());
+            }
+            newOrder.push(header);
+            products.forEach(row => newOrder.push(row));
+        }
+        // Distribute buffer to next groups or create new group if needed
+        let currentGroup = groupCount;
+        while (buffer.length > 0) {
+            // Create new group header
+            let newHeader = document.createElement('tr');
+            newHeader.className = 'table-group-header bg-light group-draggable';
+            newHeader.setAttribute('draggable', 'true');
+            newHeader.setAttribute('data-group', currentGroup);
+            newHeader.innerHTML = `<td colspan="6" style="font-weight:bold; background:#f9f9fa; border-top:2px solid #dee2e6; cursor:move;">Group ${currentGroup + 1}</td>`;
+            newOrder.push(newHeader);
+            for (let i = 0; i < 4 && buffer.length > 0; i++) {
+                let row = buffer.shift();
+                row.setAttribute('data-group', currentGroup);
+                newOrder.push(row);
+            }
+            currentGroup++;
+        }
+        // Clear tbody and re-append in new order
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        newOrder.forEach(row => tbody.appendChild(row));
+        // Re-attach group drag listeners to new headers
+        tbody.querySelectorAll('.group-draggable').forEach(row => {
+            row.removeEventListener('dragstart', handleGroupDragStart);
+            row.removeEventListener('dragover', handleGroupDragOver);
+            row.removeEventListener('drop', handleGroupDrop);
+            row.removeEventListener('dragend', handleGroupDragEnd);
+            row.addEventListener('dragstart', handleGroupDragStart);
+            row.addEventListener('dragover', handleGroupDragOver);
+            row.addEventListener('drop', handleGroupDrop);
+            row.addEventListener('dragend', handleGroupDragEnd);
+        });
+    }
+    return false;
+}
+
+function handleGroupDragEnd(e) {
+    this.style.opacity = '';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Group drag and drop event listeners
+    document.querySelectorAll('.group-draggable').forEach(row => {
+        row.addEventListener('dragstart', handleGroupDragStart);
+        row.addEventListener('dragover', handleGroupDragOver);
+        row.addEventListener('drop', handleGroupDrop);
+        row.addEventListener('dragend', handleGroupDragEnd);
+    });
+});
+</script>
+<style>
+/* Eye-popping dark blue background with light blue text for the product table */
+.table-inventory {
+    background: #0a2342 !important; /* deep dark blue */
+    color: #aee7ff !important;     /* light blue text */
+}
+.table-inventory th,
+.table-inventory td {
+    background: #0a2342 !important;
+    color: #aee7ff !important;
+    border-color: #1e3a5c !important;
+}
+.table-inventory thead th {
+    background: #102d4a !important;
+    color: #aee7ff !important;
+    border-bottom: 2px solid #1e3a5c !important;
+}
+.table-inventory .table-group-header {
+    background: #102d4a !important;
+    color: #7fd6ff !important;
+}
+.table-inventory .group-product-row {
+    background: #0a2342 !important;
+    color: #aee7ff !important;
+}
+.table-inventory .group-product-row.drag-over {
+    background: #1e3a5c !important;
+    color: #fff !important;
+}
+.table-inventory .group-product-row.selected {
+    background: #1e3a5c !important;
+    color: #fff !important;
+}
+.table-inventory .badge {
+    background: #1e3a5c !important;
+    color: #aee7ff !important;
+}
+.table-inventory input[type="checkbox"]:checked {
+    accent-color: #7fd6ff;
+}
+
+.table-tip-alert {
+    font-size: 0.85em !important;
+    padding: 0.35em 0.75em !important;
+    margin-bottom: 0.5em !important;
+    border-radius: 0.4em !important;
+    display: inline-block;
+    max-width: 420px;
+}
+</style>
+>>>>>>> d611031 (commit)
 {% endblock %}
