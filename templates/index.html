@@ -56,6 +56,20 @@
             </div>
             <button type="submit" class="btn btn-primary mt-2">Import Data</button>
           </form>
+          
+          <!-- Chrome Compatibility Test -->
+          <div class="card mt-3">
+            <div class="card-header">
+              <h6><i class="fas fa-bug"></i> Chrome Compatibility Test</h6>
+            </div>
+            <div class="card-body">
+              <p class="small text-muted">If you're having issues with Chrome authentication, try this test:</p>
+              <button type="button" class="btn btn-outline-info btn-sm" onclick="testChromeCompatibility()">
+                <i class="fas fa-cog"></i> Test Chrome Compatibility
+              </button>
+              <div id="chrome-test-result" class="mt-2"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -111,6 +125,25 @@
             <i class="fas fa-file-word text-info"></i> Output:
             <small class="d-block">Word document with inventory slips</small>
           </p>
+        </div>
+      </div>
+      
+      <!-- Chrome Troubleshooting -->
+      <div class="card mt-3">
+        <div class="card-header">
+          <h5><i class="fas fa-exclamation-triangle"></i> Chrome Issues?</h5>
+        </div>
+        <div class="card-body">
+          <p class="small text-muted">If the app doesn't work when signed into Chrome:</p>
+          <ul class="small">
+            <li>Try opening in an incognito window</li>
+            <li>Clear browser cache and cookies</li>
+            <li>Disable Chrome extensions temporarily</li>
+            <li>Use a different browser (Firefox, Safari)</li>
+          </ul>
+          <button type="button" class="btn btn-outline-warning btn-sm" onclick="openIncognito()">
+            <i class="fas fa-eye-slash"></i> Open in Incognito
+          </button>
         </div>
       </div>
     </div>
@@ -169,7 +202,7 @@ function processJsonData() {
 document.getElementById('open_downloads_btn').addEventListener('click', function() {
     fetch('{{ url_for("open_downloads") }}')
       .then(response => response.json())
-      .then data => {
+      .then(data => {
           if (!data.success) {
               alert('Failed to open downloads folder: ' + data.message);
           }
@@ -178,5 +211,47 @@ document.getElementById('open_downloads_btn').addEventListener('click', function
           alert('Error: ' + err);
       });
 });
+
+function testChromeCompatibility() {
+    const resultDiv = document.getElementById('chrome-test-result');
+    resultDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Testing...';
+    
+    fetch('{{ url_for("debug_session") }}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const info = data.session_info;
+                let result = '<div class="alert alert-success">';
+                result += '<h6>Chrome Compatibility Test Results:</h6>';
+                result += `<p><strong>Chrome Version:</strong> ${info.chrome_version || 'Not detected'}</p>`;
+                result += `<p><strong>Session Storage:</strong> ${info.test_storage ? '✅ Working' : '❌ Failed'}</p>`;
+                result += `<p><strong>Session Keys:</strong> ${info.session_keys.length}</p>`;
+                result += `<p><strong>User Agent:</strong> ${info.user_agent.substring(0, 50)}...</p>`;
+                result += '</div>';
+                resultDiv.innerHTML = result;
+            } else {
+                resultDiv.innerHTML = `<div class="alert alert-danger">Test failed: ${data.error}</div>`;
+            }
+        })
+        .catch(error => {
+            resultDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+        });
+}
+
+function openIncognito() {
+    const currentUrl = window.location.href;
+    try {
+        // Try to open in incognito mode
+        if (navigator.userAgent.includes('Chrome')) {
+            // For Chrome, we can't directly open incognito, but we can suggest it
+            alert('To open in incognito mode:\n1. Press Ctrl+Shift+N (Windows/Linux) or Cmd+Shift+N (Mac)\n2. Navigate to: ' + currentUrl);
+        } else {
+            // For other browsers, just open in new window
+            window.open(currentUrl, '_blank');
+        }
+    } catch (error) {
+        alert('Error opening incognito window: ' + error.message);
+    }
+}
 </script>
 {% endblock %}

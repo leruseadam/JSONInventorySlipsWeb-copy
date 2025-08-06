@@ -252,6 +252,41 @@ app.secret_key = 'your-fixed-development-secret-key'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
+# Add security headers and session configuration for Chrome compatibility
+@app.after_request
+def add_security_headers(response):
+    """Add security headers to make the app work better with Chrome"""
+    # Remove any existing problematic headers
+    response.headers.pop('X-Frame-Options', None)
+    response.headers.pop('X-Content-Type-Options', None)
+    
+    # Add Chrome-compatible headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    
+    # Add CORS headers for local development
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    
+    # Add cache control headers
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    
+    return response
+
+# Configure session for Chrome compatibility
+app.config.update(
+    SESSION_COOKIE_SECURE=False,  # Set to True only if using HTTPS
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',  # More permissive than 'Strict' for Chrome
+    SESSION_COOKIE_PATH='/',
+    PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
+)
+
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -1780,6 +1815,42 @@ def test_chunked_data():
         logger.error(f"Test failed: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/debug-session')
+def debug_session():
+    """Debug session issues for Chrome compatibility"""
+    try:
+        # Get session info
+        session_info = {
+            'session_id': session.get('_id', 'Not set'),
+            'session_keys': list(session.keys()),
+            'session_size': len(str(session)),
+            'user_agent': request.headers.get('User-Agent', 'Unknown'),
+            'chrome_version': None
+        }
+        
+        # Try to detect Chrome version
+        user_agent = request.headers.get('User-Agent', '')
+        if 'Chrome/' in user_agent:
+            try:
+                chrome_version = user_agent.split('Chrome/')[1].split(' ')[0]
+                session_info['chrome_version'] = chrome_version
+            except:
+                session_info['chrome_version'] = 'Unknown'
+        
+        # Test session storage
+        test_key = 'chrome_test'
+        session[test_key] = 'test_value'
+        session_info['test_storage'] = session.get(test_key) == 'test_value'
+        
+        return jsonify({
+            'success': True,
+            'session_info': session_info,
+            'headers': dict(request.headers)
+        })
+    except Exception as e:
+        logger.error(f"Session debug failed: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/about')
 def about():
     """About page"""
@@ -1791,6 +1862,16 @@ def index():
     # Load configuration for the template
     config = load_config()
     return render_template('index.html', config=config, version=APP_VERSION)
+
+@app.route('/', methods=['OPTIONS'])
+def handle_options():
+    """Handle OPTIONS requests for CORS preflight"""
+    response = app.make_default_options_response()
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
 
 @app.route('/search_json_or_api', methods=['POST'])
 def search_json_or_api():
@@ -1976,8 +2057,36 @@ if __name__ == '__main__':
                             chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
                         
                         url = f'http://localhost:{port}'
+                        
+                        # Add Chrome flags to handle authentication issues
+                        chrome_flags = [
+                            '--disable-web-security',
+                            '--disable-features=VizDisplayCompositor',
+                            '--disable-site-isolation-trials',
+                            '--disable-features=TranslateUI',
+                            '--disable-ipc-flooding-protection',
+                            '--no-first-run',
+                            '--no-default-browser-check',
+                            '--disable-default-apps'
+                        ]
+                        
                         if chrome_path:
-                            webbrowser.get(chrome_path).open(url, new=2)
+                            # Try to open with Chrome flags
+                            try:
+                                import subprocess
+                                if sys.platform == "darwin":  # macOS
+                                    cmd = ['open', '-a', 'Google Chrome', '--args'] + chrome_flags + [url]
+                                elif sys.platform == "win32":  # Windows
+                                    cmd = ['chrome.exe'] + chrome_flags + [url]
+                                else:
+                                    cmd = ['google-chrome'] + chrome_flags + [url]
+                                
+                                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                print(f"Opened Chrome with authentication-friendly flags")
+                            except Exception as e:
+                                print(f"Failed to open Chrome with flags: {e}")
+                                # Fallback to webbrowser
+                                webbrowser.get(chrome_path).open(url, new=2)
                         else:
                             webbrowser.open(url, new=2)
                     except Exception as e:
