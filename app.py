@@ -1399,7 +1399,8 @@ def generate_slips():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                from io import StringIO
+                df = pd.read_json(StringIO(df_json), orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -1487,7 +1488,8 @@ def generate_robust_slips_docx():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                from io import StringIO
+                df = pd.read_json(StringIO(df_json), orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
