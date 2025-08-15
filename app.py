@@ -1237,9 +1237,19 @@ def handle_bamboo_url(url):
 def load_from_url(url):
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
     import traceback
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    headers = {'User-Agent': 'Mozilla/5.0 (compatible; InventorySlipsBot/1.0)'}
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        response = session.get(url, timeout=30, headers=headers, verify=True)
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            logger.error(f"HTTP error {response.status_code}: {response.text}")
+            raise
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
             try:
