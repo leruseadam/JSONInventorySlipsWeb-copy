@@ -1236,17 +1236,30 @@ def handle_bamboo_url(url):
 
 def load_from_url(url):
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
+    import traceback
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
-            data = response.json()
-            df, format_type = parse_inventory_json(data)
+            try:
+                data = response.json()
+            except Exception as e:
+                logger.error(f"Error parsing JSON from URL: {url}\n{traceback.format_exc()}")
+                raise ValueError(f"Could not parse JSON from URL: {e}")
+            try:
+                df, format_type = parse_inventory_json(data)
+            except Exception as e:
+                logger.error(f"Error processing inventory JSON: {traceback.format_exc()}")
+                raise ValueError(f"Could not process inventory JSON: {e}")
             return df, format_type, data
         elif 'text/csv' in content_type or url.lower().endswith('.csv'):
-            df = pd.read_csv(BytesIO(response.content))
-            df, msg = process_csv_data(df)
+            try:
+                df = pd.read_csv(BytesIO(response.content))
+                df, msg = process_csv_data(df)
+            except Exception as e:
+                logger.error(f"Error parsing CSV from URL: {url}\n{traceback.format_exc()}")
+                raise ValueError(f"Could not parse CSV from URL: {e}")
             return df, 'CSV', None
         else:
             # Try to parse as JSON first, then CSV
@@ -1254,14 +1267,20 @@ def load_from_url(url):
                 data = response.json()
                 df, format_type = parse_inventory_json(data)
                 return df, format_type, data
-            except Exception:
+            except Exception as e_json:
+                logger.error(f"Error parsing fallback JSON from URL: {url}\n{traceback.format_exc()}")
                 try:
                     df = pd.read_csv(BytesIO(response.content))
                     df, msg = process_csv_data(df)
                     return df, 'CSV', None
-                except Exception as e:
-                    raise ValueError(f"Unsupported data format or failed to parse: {e}")
+                except Exception as e_csv:
+                    logger.error(f"Error parsing fallback CSV from URL: {url}\n{traceback.format_exc()}")
+                    raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error loading URL: {url}\n{traceback.format_exc()}")
+        raise ValueError(f"Network error loading URL: {e}")
     except Exception as e:
+        logger.error(f"General error loading data from URL: {url}\n{traceback.format_exc()}")
         raise ValueError(f"Failed to load data from URL: {e}")
     
 
