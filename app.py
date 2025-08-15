@@ -1282,7 +1282,8 @@ def data_view():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                    from io import StringIO
+                    df = pd.read_json(StringIO(df_json), orient='records')
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
