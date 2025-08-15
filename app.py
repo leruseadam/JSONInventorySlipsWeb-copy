@@ -1138,6 +1138,10 @@ def paste_json():
             return jsonify({'success': False, 'message': 'Could not process pasted JSON data.'}), 400
 
         # Store data using chunked storage
+        # Clear previous session data to avoid stale info
+        session.pop('df_json', None)
+        session.pop('format_type', None)
+        session.pop('raw_json', None)
         store_chunked_data('df_json', result_df)
         # Only store raw data if it's small enough
         if len(pasted_json) < 2000:
@@ -1244,12 +1248,13 @@ def load_from_url(url):
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
     try:
-        response = session.get(url, timeout=30, headers=headers, verify=True)
+        # Increase timeout for large files
+        response = session.get(url, timeout=240, headers=headers, verify=True)
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
             logger.error(f"HTTP error {response.status_code}: {response.text}")
-            raise
+            return None, None, None  # Prevent 502 by returning gracefully
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
             try:
@@ -1311,8 +1316,11 @@ def data_view():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                    from io import StringIO
-                    df = pd.read_json(StringIO(df_json), orient='records')
+                from io import StringIO
+                df = pd.read_json(StringIO(df_json), orient='records')
+            # Debug: log vendor field from first row
+            if not df.empty:
+                logger.info(f"First row vendor: {df.iloc[0].get('Vendor', 'Unknown')}")
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
