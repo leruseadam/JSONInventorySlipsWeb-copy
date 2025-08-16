@@ -39,45 +39,7 @@ class DocumentHandler:
             total_pages = (len(sorted_records) + 3) // 4  # Ceiling division by 4
             current_page = 1
             
-            # Initialize context
-            context = {
-                'current_page': current_page,
-                'total_pages': total_pages,
-                'page_number': f'Page {current_page} of {total_pages}'
-            }
-            
-            # Create context for the first 4 records (or fewer if less available)
-            chunk = sorted_records[:4]
-            
-            # Add context for each record in the chunk
-            for idx, record in enumerate(chunk, 1):
-                # Get quantity and ensure it's a whole number
-                qty = record.get('Quantity Received*', 0)
-                try:
-                    qty = float(qty)
-                    qty = int(round(qty))  # Round to nearest whole number
-                except (ValueError, TypeError):
-                    qty = 0
-
-                context[f'Label{idx}'] = {
-                    'AcceptedDate': record.get('Accepted Date', ''),
-                    'Vendor': record.get('Vendor', 'Unknown Vendor'),
-                    'ProductName': record.get('Product Name*', ''),
-                    'Barcode': record.get('Barcode*', ''),
-                    'QuantityReceived': str(qty)
-                }
-            
-            # Clear unused labels
-            for idx in range(len(chunk) + 1, 5):
-                context[f'Label{idx}'] = {
-                    'AcceptedDate': '',
-                    'Vendor': '',
-                    'ProductName': '',
-                    'Barcode': '',
-                    'QuantityReceived': ''
-                }
-            
-            # Configure Jinja2 environment
+            # Configure Jinja2 environment once
             jinja_env = jinja2.Environment(
                 block_start_string='{{%',
                 block_end_string='%}}',
@@ -87,19 +49,70 @@ class DocumentHandler:
                 comment_end_string='#}',
                 autoescape=True
             )
-            
-            # Render the template with the context
-            self.doc.render(context, jinja_env)
-            
-            # Add page number to footer
-            section = self.doc.sections[0]
-            footer = section.footer
-            paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            
-            page_number_text = paragraph.add_run(f'Page {current_page} of {total_pages}')
-            page_number_text.font.name = 'Arial'
-            page_number_text.font.size = Pt(10)
+
+            # Process records in groups of 4
+            for page_idx, start_idx in enumerate(range(0, len(sorted_records), 4), 1):
+                # Create new document page if not first page
+                if page_idx > 1:
+                    self.doc.add_page_break()
+                
+                chunk = sorted_records[start_idx:start_idx + 4]
+                
+                # Initialize context for this page
+                context = {
+                    'current_page': page_idx,
+                    'total_pages': total_pages,
+                    'page_number': f'Page {page_idx} of {total_pages}'
+                }
+                
+                # Add context for each record in the chunk
+                for idx, record in enumerate(chunk, 1):
+                    # Get quantity and ensure it's a whole number
+                    qty = record.get('Quantity Received*', 0)
+                    try:
+                        qty = float(qty)
+                        qty = int(round(qty))  # Round to nearest whole number
+                    except (ValueError, TypeError):
+                        qty = 0
+
+                    context[f'Label{idx}'] = {
+                        'AcceptedDate': record.get('Accepted Date', ''),
+                        'Vendor': record.get('Vendor', 'Unknown Vendor'),
+                        'ProductName': record.get('Product Name*', ''),
+                        'Barcode': record.get('Barcode*', ''),
+                        'QuantityReceived': str(qty)
+                    }
+                
+                # Clear unused labels
+                for idx in range(len(chunk) + 1, 5):
+                    context[f'Label{idx}'] = {
+                        'AcceptedDate': '',
+                        'Vendor': '',
+                        'ProductName': '',
+                        'Barcode': '',
+                        'QuantityReceived': ''
+                    }
+                
+                # Render the template for this page
+                if page_idx == 1:
+                    self.doc.render(context, jinja_env)
+                else:
+                    # For subsequent pages, we need to ensure the template is re-rendered
+                    self.doc.patch_template(context)
+                
+                # Add page number to footer
+                section = self.doc.sections[-1]  # Get the last section (current page)
+                footer = section.footer
+                paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                # Clear existing runs if any
+                for run in paragraph.runs:
+                    paragraph._element.remove(run._element)
+                
+                page_number_text = paragraph.add_run(f'Page {page_idx} of {total_pages}')
+                page_number_text.font.name = 'Arial'
+                page_number_text.font.size = Pt(10)
             
             return True
 
