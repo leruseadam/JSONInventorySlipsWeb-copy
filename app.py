@@ -50,7 +50,7 @@ import configparser
 from werkzeug.utils import secure_filename
 
 # For document generation
-from src.utils.docgen import DocxGenerator
+from src.utils.document_handler import DocumentHandler
 
 # Local imports
 from src.utils.document_handler import DocumentHandler
@@ -959,10 +959,9 @@ def cleanup_temp_files():
         logger.error(f"Error during cleanup: {e}")
 
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
-    """Generate inventory slip using DocxGenerator"""
+    """Generate inventory slip using original template-based DocumentHandler"""
     try:
-        # Import our new generator
-        from src.utils.docgen import DocxGenerator
+        from src.utils.document_handler import DocumentHandler
         
         # Get vendor name 
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
@@ -972,32 +971,61 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
         
         # Create filename
         today_date = datetime.now().strftime("%Y%m%d")
-        outname = f"{today_date}_{vendor_name}_OrderSheet.docx"
+        outname = f"{today_date}_{vendor_name}_Slips.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
 
-        # Create generator
-        generator = DocxGenerator()
-        
         if status_callback:
-            status_callback("Creating document...")
+            status_callback("Processing data...")
 
-        # Generate document with records
-        records = selected_df.to_dict('records')
-        generator.generate_inventory_slip(
-            records=records,
-            vendor_name=vendor_name,
-            date=today_date,
-            rows_per_page=20
-        )
+        # Initialize document handler
+        doc_handler = DocumentHandler()
         
+        # Load template
+        template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
+        if not os.path.exists(template_path):
+            return False, f"Template not found at {template_path}"
+            
+        doc_handler.create_document(template_path)
+
+        # Process records in chunks of 4 (for template layout)
+        records = []
+        for chunk_start in range(0, len(selected_df), 4):
+            chunk = selected_df.iloc[chunk_start:chunk_start+4]
+            for _, row in chunk.iterrows():
+                # Get vendor info, using full vendor name if available
+                vendor_name = row.get("Vendor", "")
+                if " - " in vendor_name:
+                    vendor_name = vendor_name.split(" - ")[1]
+                
+                record = {
+                    "Product Name*": str(row.get("Product Name*", ""))[:100],
+                    "Barcode*": str(row.get("Barcode*", ""))[:50],
+                    "Accepted Date": str(row.get("Accepted Date", ""))[:20],
+                    "Quantity Received*": str(row.get("Quantity Received*", ""))[:20],
+                    "Vendor": str(vendor_name or "Unknown Vendor")[:50],
+                    "Product Type*": str(row.get("Product Type*", ""))[:50]
+                }
+                records.append(record)
+
+        if status_callback:
+            status_callback("Generating document...")
+
+        # Add content to document
+        if not doc_handler.add_content_to_table(records):
+            return False, "Failed to add content to document"
+
         if status_callback:
             status_callback("Saving document...")
-        
+
         # Save document
-        if generator.save(outpath):
+        if doc_handler.save_document(outpath):
             if os.path.exists(outpath):
+                # Adjust font sizes
+                if status_callback:
+                    status_callback("Adjusting formatting...")
+                adjust_table_font_sizes(outpath)
                 return True, outpath
-        
+                
         return False, "Failed to create document"
 
     except Exception as e:
