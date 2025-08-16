@@ -4,30 +4,59 @@ import logging
 from logging.handlers import RotatingFileHandler
 import traceback
 
+# Set up logging
+import logging
+logger = logging.getLogger('wsgi')
+logger.setLevel(logging.INFO)
+
 # Configure paths for PythonAnywhere
 username = os.getenv('USER', 'yourusername')  # Will be replaced during deployment
 WEBAPP_PATH = f'/home/{username}/JSONInventorySlipsWeb-copy'
 VENV_PATH = f'/home/{username}/.virtualenvs/myapp'
 
-# PythonAnywhere specific paths
+# Python paths - check multiple possible locations
 PYTHON_VERSION = '3.11'
-PYTHON_PATH = f'/opt/alt/python{PYTHON_VERSION.replace(".", "")}'
+POSSIBLE_PYTHON_PATHS = [
+    f'/opt/alt/python{PYTHON_VERSION.replace(".", "")}',
+    '/usr/local',
+    '/usr',
+    '/usr/local/python3.11',
+    '/usr/bin/python3.11'
+]
+
+# Find the first existing Python path
+PYTHON_PATH = None
+for path in POSSIBLE_PYTHON_PATHS:
+    if os.path.exists(path):
+        PYTHON_PATH = path
+        break
+
+if not PYTHON_PATH:
+    PYTHON_PATH = '/usr'  # Fallback to system Python path
+
+# Build list of possible site-packages locations
 SITE_PACKAGES = [
     os.path.join(VENV_PATH, f'lib/python{PYTHON_VERSION}/site-packages'),
     os.path.join(PYTHON_PATH, 'lib'),
     os.path.join(PYTHON_PATH, f'lib/python{PYTHON_VERSION}'),
+    os.path.join(PYTHON_PATH, f'lib/python{PYTHON_VERSION}/site-packages'),
     os.path.join(PYTHON_PATH, f'lib/python{PYTHON_VERSION}/lib-dynload'),
-    os.path.join(PYTHON_PATH, 'lib/dist-packages')
+    '/usr/local/lib/python3.11/site-packages',
+    '/usr/lib/python3.11/site-packages',
+    '/usr/lib/python3/dist-packages'
 ]
 
-# Add PythonAnywhere paths to sys.path
-if PYTHON_PATH not in sys.path:
-    sys.path.insert(0, PYTHON_PATH)
-
-# Add all site-packages directories to sys.path
+# Log Python path information
+logger.info(f"Selected Python path: {PYTHON_PATH}")
+logger.info("Checking site-packages directories:")
 for site_pkg in SITE_PACKAGES:
-    if os.path.exists(site_pkg) and site_pkg not in sys.path:
-        sys.path.append(site_pkg)
+    if os.path.exists(site_pkg):
+        logger.info(f"Found: {site_pkg}")
+    sys.path.append(site_pkg)
+
+# Ensure WEBAPP_PATH is in sys.path
+if WEBAPP_PATH not in sys.path:
+    sys.path.insert(0, WEBAPP_PATH)
 
 # Create tmp directories with proper permissions
 TMP_BASE = '/tmp/jsoninventoryslips'
