@@ -5,8 +5,8 @@ from logging.handlers import RotatingFileHandler
 import traceback
 
 # Configure paths for PythonAnywhere
-WEBAPP_PATH = '/home/leruseadam/JSONInventorySlipsWeb-copy'
-VENV_PATH = '/home/leruseadam/.virtualenvs/inventoryapp/lib/python3.11/site-packages'
+WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
+VENV_PATH = '/home/leruseadam/.virtualenvs/inventoryapp/lib/python3.11/site-packages'  # PythonAnywhere venv path
 
 # Create tmp directories for logs and uploads
 log_directory = '/tmp/jsoninventoryslips'
