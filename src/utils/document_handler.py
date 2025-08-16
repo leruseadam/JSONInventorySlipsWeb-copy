@@ -27,6 +27,8 @@ class DocumentHandler:
             from docx.enum.text import WD_ALIGN_PARAGRAPH
             from docx.oxml import OxmlElement
             from docx.oxml.ns import qn
+            from docxcompose.composer import Composer
+            
             # Sort records by product type and then by product name
             sorted_records = sorted(records, 
                 key=lambda x: (
@@ -37,9 +39,15 @@ class DocumentHandler:
             
             # Calculate total pages
             total_pages = (len(sorted_records) + 3) // 4  # Ceiling division by 4
-            current_page = 1
+
+            # Store the template path for creating new pages
+            template_path = self.doc.docx.path
             
-            # Configure Jinja2 environment once
+            # Create a new composer with the first page
+            master = self.doc.docx
+            composer = Composer(master)
+            
+            # Configure Jinja2 environment
             jinja_env = jinja2.Environment(
                 block_start_string='{{%',
                 block_end_string='%}}',
@@ -52,11 +60,11 @@ class DocumentHandler:
 
             # Process records in groups of 4
             for page_idx, start_idx in enumerate(range(0, len(sorted_records), 4), 1):
-                # Create new document page if not first page
-                if page_idx > 1:
-                    self.doc.add_page_break()
-                
                 chunk = sorted_records[start_idx:start_idx + 4]
+                
+                # Create a new template instance for each page
+                if page_idx > 1:
+                    self.doc = DocxTemplate(template_path)
                 
                 # Initialize context for this page
                 context = {
@@ -93,15 +101,11 @@ class DocumentHandler:
                         'QuantityReceived': ''
                     }
                 
-                # Render the template for this page
-                if page_idx == 1:
-                    self.doc.render(context, jinja_env)
-                else:
-                    # For subsequent pages, we need to ensure the template is re-rendered
-                    self.doc.patch_template(context)
+                # Render the template
+                self.doc.render(context, jinja_env)
                 
                 # Add page number to footer
-                section = self.doc.sections[-1]  # Get the last section (current page)
+                section = self.doc.docx.sections[-1]
                 footer = section.footer
                 paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -113,6 +117,13 @@ class DocumentHandler:
                 page_number_text = paragraph.add_run(f'Page {page_idx} of {total_pages}')
                 page_number_text.font.name = 'Arial'
                 page_number_text.font.size = Pt(10)
+
+                # Add the page to the composer if it's not the first page
+                if page_idx > 1:
+                    composer.append(self.doc.docx)
+            
+            # Set the composed document as the final document
+            self.doc.docx = composer.doc
             
             return True
 
