@@ -278,13 +278,15 @@ def add_security_headers(response):
     
     return response
 
-# Configure session for Chrome compatibility
+# Configure session for Chrome compatibility and uWSGI
 app.config.update(
     SESSION_COOKIE_SECURE=False,  # Set to True only if using HTTPS
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',  # More permissive than 'Strict' for Chrome
     SESSION_COOKIE_PATH='/',
     PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
+    SESSION_REFRESH_EACH_REQUEST=True,
+    SESSION_TYPE='filesystem'  # Use filesystem instead of signed cookies
 )
 
 # Helper function to get resource path (for templates)
@@ -1216,12 +1218,32 @@ def load_url():
             clear_chunked_data(key)
 
         # Store new data in chunks
-        if not store_chunked_data('df_json', result_df):
+        success = store_chunked_data('df_json', result_df)
+        if not success:
             logger.error("Failed to store DataFrame in chunked storage.")
             flash('Failed to store loaded data.')
             return redirect(url_for('index'))
+
+        # Store format type in session
+        session['format_type'] = format_type
+
+        # Log session data for debugging
+        logger.info(f"Session data after storing: format_type={session.get('format_type')}")
+        logger.info(f"Chunks stored: {session.get('df_json_chunks')}")
+        
+        # Store raw data if it's not too large
+        if raw_data:
+            try:
+                raw_json = json.dumps(raw_data)
+                if len(raw_json) < 2000:
+                    store_chunked_data('raw_json', raw_json)
+            except Exception as e:
+                logger.warning(f"Could not store raw data: {e}")
+
         logger.info(f"Successfully loaded and stored data from URL: {url}")
-        return redirect(url_for('data_view'))
+        response = redirect(url_for('data_view'))
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
 
     except Exception as e:
         logger.error(f"Exception in /load-url: {str(e)}", exc_info=True)
@@ -1281,15 +1303,11 @@ def load_from_url(url):
     
     class SSLAdapter(HTTPAdapter):
         def init_poolmanager(self, *args, **kwargs):
-            context = create_urllib3_context()
-            context.load_verify_locations(cafile=certifi.where())
-            kwargs['ssl_context'] = context
+            kwargs['ssl_context'] = ssl_context
             return super(SSLAdapter, self).init_poolmanager(*args, **kwargs)
             
         def proxy_manager_for(self, *args, **kwargs):
-            context = create_urllib3_context()
-            context.load_verify_locations(cafile=certifi.where())
-            kwargs['ssl_context'] = context
+            kwargs['ssl_context'] = ssl_context
             return super(SSLAdapter, self).proxy_manager_for(*args, **kwargs)
     
     def try_direct_connection(url, timeout=60):
@@ -1623,28 +1641,46 @@ def process_response(response):
 @app.route('/data-view')
 def data_view():
     try:
+        # Log session state for debugging
+        logger.info(f"Session keys at start of data_view: {list(session.keys())}")
+        logger.info(f"Session format_type: {session.get('format_type')}")
+        logger.info(f"Session df_json_chunks: {session.get('df_json_chunks')}")
+
         # Get chunked data from session
         df_json = get_chunked_data('df_json')
         format_type = session.get('format_type')
 
         if df_json is None:
+            logger.error("No data found in session")
             flash('No data available. Please load data first.')
             return redirect(url_for('index'))
 
+        logger.info(f"Retrieved df_json data length: {len(df_json) if df_json else 0}")
+
         try:
-            if isinstance(df_json, list):
-                df = pd.DataFrame(df_json)
-            else:
+            if isinstance(df_json, str):
                 from io import StringIO
                 df = pd.read_json(StringIO(df_json), orient='records')
-            # Debug: log first 3 rows of DataFrame after loading
-            if not df.empty:
-                logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
-            # Debug: log vendor field from first row
-            if not df.empty:
-                logger.info(f"First row vendor: {df.iloc[0].get('Vendor', 'Unknown')}")
+            elif isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                logger.error(f"Unexpected df_json type: {type(df_json)}")
+                flash('Error: Invalid data format')
+                return redirect(url_for('index'))
+
+            # Validate DataFrame
+            if df.empty:
+                logger.error("Empty DataFrame created")
+                flash('Error: No data found in the loaded file')
+                return redirect(url_for('index'))
+
+            # Debug logging
+            logger.info(f"DataFrame shape: {df.shape}")
+            logger.info(f"DataFrame columns: {df.columns.tolist()}")
+            logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
+            logger.info(f"First row vendor: {df.iloc[0].get('Vendor', 'Unknown')}")
         except Exception as e:
-            logger.error(f"Error parsing JSON data: {str(e)}")
+            logger.error(f"Error parsing JSON data: {str(e)}", exc_info=True)
             flash('Error loading data. Please try again.')
             return redirect(url_for('index'))
         
