@@ -6,7 +6,7 @@ import traceback
 
 # Configure paths for PythonAnywhere
 WEBAPP_PATH = '/home/leruseadam/JSONInventorySlipsWeb-copy'
-VENV_PATH = '/home/leruseadam/.virtualenvs/inventoryapp/lib/python3.9/site-packages'
+VENV_PATH = '/home/leruseadam/.virtualenvs/inventoryapp/lib/python3.11/site-packages'
 
 # Set up paths
 paths = [WEBAPP_PATH]
