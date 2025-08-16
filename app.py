@@ -42,12 +42,10 @@ from flask import (
 )
 import requests
 import pandas as pd
-from docxtpl import DocxTemplate
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_ORIENT
 from docx.shared import Pt, Inches
-from docxcompose.composer import Composer
 import configparser
 from werkzeug.utils import secure_filename
 
@@ -459,171 +457,77 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         return False, "No data selected."
 
 def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
-    # ...existing code...
-    
+    """Generate inventory slips using DocxGenerator"""
     try:
+        from src.utils.docgen import DocxGenerator
+
+        if selected_df.empty:
+            if status_callback:
+                status_callback("Error: No data selected.")
+            return False, "No data selected."
+
         # Get vendor name from first row
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
         # Clean vendor name (remove special characters and spaces)
         vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
+        
         # Get today's date
         today_date = datetime.now().strftime("%Y%m%d")
+        
         # Create filename
         outname = f"{today_date}_{vendor_name}_Slips.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
-        
-        # ...rest of existing code...
-        
-        # Get settings from config
-        items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
-        template_path = config['PATHS'].get('template_path')
-        if not template_path or not os.path.exists(template_path):
-            template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
-            if not os.path.exists(template_path):
-                raise ValueError(f"Template file not found at: {template_path}")
         
         if status_callback:
             status_callback("Processing data...")
 
         # Clean and validate the data
-        records = selected_df.to_dict(orient="records")
-        cleaned_records = []
-        
-        for record in records:
-            cleaned_record = {}
-            for key, value in record.items():
-                # Convert all values to strings and clean them
-                if value is None:
-                    cleaned_record[key] = ""
-                else:
-                    # Remove any problematic characters and limit length
-                    cleaned_value = str(value).strip()
-                    # Remove any non-printable characters except newlines and tabs
-                    cleaned_value = ''.join(char for char in cleaned_value if char.isprintable() or char in '\n\t')
-                    # Limit length to prevent overflow
-                    cleaned_record[key] = cleaned_value[:200] if len(cleaned_value) > 200 else cleaned_value
-            cleaned_records.append(cleaned_record)
-        
-        pages = []
-
-        # Process records in chunks of 4 (or configured size)
-        total_chunks = (len(cleaned_records) + items_per_page - 1) // items_per_page
-        current_chunk = 0
-
-        for chunk in chunk_records(cleaned_records, items_per_page):
-            current_chunk += 1
-            if progress_callback:
-                progress = (current_chunk / total_chunks) * 50
-                progress_callback(int(progress))
-
-            if status_callback:
-                status_callback(f"Generating page {current_chunk} of {total_chunks}...")
-
-            try:
-                # Create a fresh template instance for each chunk
-                tpl = DocxTemplate(template_path)
-                context = {}
-
-                # Fill context with records - modified vendor handling
-                for idx, record in enumerate(chunk, 1):
-                    # Get vendor info, using full vendor name if available
-                    vendor_name = record.get("Vendor", "")
-                    # If vendor is in format "license - name", extract just the name
-                    if " - " in vendor_name:
-                        vendor_name = vendor_name.split(" - ")[1]
-                    
-                    # Ensure all values are strings and not too long
-                    context[f"Label{idx}"] = {
-                        "ProductName": str(record.get("Product Name*", ""))[:100],
-                        "Barcode": str(record.get("Barcode*", ""))[:50],
-                        "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
-                        "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
-                        "Vendor": str(vendor_name or "Unknown Vendor")[:50],
-                        "ProductType": str(record.get("Product Type*", ""))[:50]
-                    }
-
-                # Fill remaining slots with empty values
-                for i in range(len(chunk) + 1, items_per_page + 1):
-                    context[f"Label{i}"] = {
-                        "ProductName": "",
-                        "Barcode": "",
-                        "AcceptedDate": "",
-                        "QuantityReceived": "",
-                        "Vendor": "",
-                        "ProductType": ""
-                    }
-
-                # Render template with context
-                tpl.render(context)
+        records = []
+        for _, row in selected_df.iterrows():
+            # Get vendor info, using full vendor name if available
+            vendor_name = row.get("Vendor", "")
+            if " - " in vendor_name:
+                vendor_name = vendor_name.split(" - ")[1]
                 
-                # Save to BytesIO with proper error handling
-                output = BytesIO()
-                tpl.save(output)
-                output.seek(0)
-                
-                # Create document from BytesIO
-                doc = Document(output)
-                pages.append(doc)
+            record = {
+                "Product Name*": str(row.get("Product Name*", ""))[:100],
+                "Barcode*": str(row.get("Barcode*", ""))[:50],
+                "Accepted Date": str(row.get("Accepted Date", ""))[:20],
+                "Quantity Received*": str(row.get("Quantity Received*", ""))[:20],
+                "Vendor": str(vendor_name or "Unknown Vendor")[:50],
+                "Product Type*": str(row.get("Product Type*", ""))[:50]
+            }
+            records.append(record)
 
-            except Exception as e:
-                logger.error(f"Error generating page {current_chunk}: {e}")
-                raise ValueError(f"Error generating page {current_chunk}: {e}")
-
-        if not pages:
-            return False, "No documents generated."
-
-        # Combine pages with better error handling
         if status_callback:
-            status_callback("Combining pages...")
+            status_callback("Generating document...")
 
-        try:
-            master = pages[0]
-            composer = Composer(master)
-            
-            for i, doc in enumerate(pages[1:]):
+        # Create generator and generate document
+        generator = DocxGenerator()
+        generator.generate_inventory_slip(
+            records=records,
+            vendor_name=vendor_name,
+            date=today_date,
+            rows_per_page=int(config['SETTINGS'].get('items_per_page', '4'))
+        )
+
+        if status_callback:
+            status_callback("Saving document...")
+
+        # Save document with proper error handling
+        if generator.save(outpath):
+            if os.path.exists(outpath):
+                # Adjust font sizes
+                if status_callback:
+                    status_callback("Adjusting formatting...")
+                adjust_table_font_sizes(outpath)
+
                 if progress_callback:
-                    progress = 50 + ((i + 1) / len(pages[1:])) * 40
-                    progress_callback(int(progress))
-                
-                # Add page break before appending
-                if hasattr(composer, 'doc') and composer.doc.paragraphs:
-                    composer.doc.paragraphs[-1].add_run().add_break()
-                
-                composer.append(doc)
+                    progress_callback(100)
 
-            # Save final document with proper error handling
-            now = datetime.now().strftime("%Y%m%d_%H%M%S")
-            outname = f"inventory_slips_{now}.docx"
-            outpath = os.path.join(config['PATHS']['output_dir'], outname)
+                return True, outpath
 
-            if status_callback:
-                status_callback("Saving document...")
-
-            # Save to a temporary file first, then move to final location
-            temp_path = outpath + ".tmp"
-            master.save(temp_path)
-            
-            # Validate the saved document
-            if not validate_docx(temp_path):
-                raise ValueError("Generated document is corrupted")
-            
-            # Move to final location
-            import shutil
-            shutil.move(temp_path, outpath)
-
-            # Adjust font sizes
-            if status_callback:
-                status_callback("Adjusting formatting...")
-            adjust_table_font_sizes(outpath)
-
-            if progress_callback:
-                progress_callback(100)
-
-            return True, outpath
-
-        except Exception as e:
-            logger.error(f"Error combining or saving documents: {e}")
-            raise ValueError(f"Error combining or saving documents: {e}")
+        return False, "Failed to create document"
 
     except Exception as e:
         if status_callback:
