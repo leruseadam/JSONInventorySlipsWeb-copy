@@ -44,38 +44,50 @@ class DocumentHandler:
 
                 # Replace placeholders for each record in chunk
                 for idx, record in enumerate(chunk, 1):
+                    product_name = record.get('Product Name*', '')
+                    vendor = record.get('Vendor', 'Unknown Vendor')
+                    if ' - ' in vendor:  # Extract actual vendor name if in format "ID - Name"
+                        vendor = vendor.split(' - ')[1]
+                    
                     replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': record.get('Accepted Date', ''),
-                        f'{{{{Label{idx}.Vendor}}}}': record.get('Vendor', 'Unknown Vendor'),
-                        f'{{{{Label{idx}.ProductName}}}}': record.get('Product Name*', ''),
-                        f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode*', ''),
-                        f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('Quantity Received*', ''))
+                        'PRODUCT_NAME': product_name[:100],  # Limit length
+                        'BARCODE': record.get('Barcode*', '')[:50],
+                        'DATE': record.get('Accepted Date', ''),
+                        'VENDOR': vendor[:50],
+                        'QUANTITY': str(record.get('Quantity Received*', ''))[:20],
+                        'STRAIN': record.get('Strain Name', '')[:50]
                     }
                     
-                    # Apply replacements in all paragraphs
+                    # Apply replacements in all paragraphs and tables
                     for paragraph in all_paragraphs:
                         for run in paragraph.runs:
-                            for old_text, new_text in replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, str(new_text))
-                                    run.font.name = 'Arial'
-                                    run.font.size = Pt(11)
+                            text = run.text
+                            for placeholder, new_value in replacements.items():
+                                placeholder = '{{' + placeholder + '}}'
+                                if placeholder in text:
+                                    text = text.replace(placeholder, str(new_value))
+                                    run.text = text
+                                    run.font.name = 'Cambria'  # Use template font
+                                    if 'PRODUCT_NAME' in placeholder:
+                                        run.font.size = Pt(11)  # Larger font for product name
+                                    else:
+                                        run.font.size = Pt(10)  # Standard font size
 
-                # Clean up unused placeholders for this chunk
-                for idx in range(len(chunk) + 1, 5):
-                    empty_replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': '',
-                        f'{{{{Label{idx}.Vendor}}}}': '',
-                        f'{{{{Label{idx}.ProductName}}}}': '',
-                        f'{{{{Label{idx}.Barcode}}}}': '',
-                        f'{{{{Label{idx}.QuantityReceived}}}}': ''
-                    }
-                    
-                    for paragraph in all_paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in empty_replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, '')
+                # Clean up any remaining placeholders
+                empty_replacements = {
+                    '{{PRODUCT_NAME}}': '',
+                    '{{BARCODE}}': '',
+                    '{{DATE}}': '',
+                    '{{VENDOR}}': '',
+                    '{{QUANTITY}}': '',
+                    '{{STRAIN}}': ''
+                }
+                
+                for paragraph in all_paragraphs:
+                    for run in paragraph.runs:
+                        for old_text, new_text in empty_replacements.items():
+                            if old_text in run.text:
+                                run.text = run.text.replace(old_text, '')
 
             return True
 
