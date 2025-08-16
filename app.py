@@ -1388,8 +1388,13 @@ def load_from_url(url):
             adapter = SSLAdapter(max_retries=3)
             session.mount('https://', adapter)
             
-            # Set verify to True and use certifi's certificates
-            session.verify = certifi.where()
+            # Set verify to the path to certificates, never a boolean
+            cert_path = certifi.where()
+            if not isinstance(cert_path, str):
+                logger.error("Invalid certificate path from certifi")
+                raise ValueError("Invalid SSL certificate path")
+                
+            session.verify = cert_path
             
             response = session.get(url, timeout=timeout)
             response.raise_for_status()  # Raise exception for bad status codes
@@ -1469,17 +1474,17 @@ def load_from_url(url):
     logger.info("Trying HTTP proxy with SSL verification...")
     session = requests.Session()
     
-    # More aggressive retry strategy
+    # More aggressive retry strategy with lower timeouts
     retries = Retry(
-        total=5,  # Increased total retries
-        backoff_factor=1,  # Increased backoff
+        total=3,  # Reduced total retries to fail faster
+        backoff_factor=0.5,  # Shorter backoff between retries
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "HEAD", "OPTIONS"],  # Explicitly allow methods
+        allowed_methods=["GET", "HEAD", "OPTIONS"],
         raise_on_status=True,
         respect_retry_after_header=True
     )
     
-    # Configure proxy settings
+    # Configure proxy settings with shorter timeout
     proxies = {
         'http': 'http://proxy.pythonanywhere.com:3128',
         'https': 'http://proxy.pythonanywhere.com:3128',
@@ -1489,18 +1494,20 @@ def load_from_url(url):
     class SSLAdapter(HTTPAdapter):
         def init_poolmanager(self, *args, **kwargs):
             kwargs['ssl_context'] = ssl_context
+            kwargs['timeout'] = urllib3.Timeout(connect=20, read=40)  # Shorter timeouts
             return super().init_poolmanager(*args, **kwargs)
         
         def proxy_manager_for(self, *args, **kwargs):
             kwargs['ssl_context'] = ssl_context
+            kwargs['timeout'] = urllib3.Timeout(connect=20, read=40)  # Shorter timeouts
             return super().proxy_manager_for(*args, **kwargs)
     
-    # Use our custom adapter with higher pool maxsize
+    # Use our custom adapter with optimized settings
     adapter = SSLAdapter(
         max_retries=retries,
-        pool_connections=10,  # Increased from default
-        pool_maxsize=10,     # Increased from default
-        pool_block=True      # Block when pool is full
+        pool_connections=5,   # Reduced pool size
+        pool_maxsize=5,      # Reduced pool size
+        pool_block=False     # Don't block when pool is full
     )
     
     session.mount('https://', adapter)
@@ -1510,15 +1517,15 @@ def load_from_url(url):
         # Use more granular timeout settings
         response = session.get(
             url,
-            timeout=(30, 300),  # (connect timeout, read timeout)
+            timeout=(20, 40),  # Shorter timeouts (connect, read)
             proxies=proxies,
-            verify=True,      # Always verify SSL
-            stream=True,      # Use streaming
+            verify=certifi.where(),  # Use certifi path explicitly
+            stream=True,
             allow_redirects=True,
             headers={
                 'User-Agent': 'InventorySlipsBot/1.0',
-                'Accept': '*/*',
-                'Connection': 'keep-alive'
+                'Accept': 'application/json, text/csv, */*',
+                'Connection': 'close'  # Don't keep connection alive
             }
         )
         
