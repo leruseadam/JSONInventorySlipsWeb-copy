@@ -1196,13 +1196,13 @@ def upload_csv():
 # Then, update the URL loading function
 @app.route('/load-url', methods=['POST'])
 def load_url():
-    logger.info(f"URL loaded: {url}")
     try:
         url = request.form.get('url')
         if not url:
             flash('Please enter a URL')
             return redirect(url_for('index'))
 
+        logger.info(f"URL loaded: {url}")
         logger.info(f"Attempting to load URL: {url}")
         result_df, format_type, raw_data = load_from_url(url)
 
