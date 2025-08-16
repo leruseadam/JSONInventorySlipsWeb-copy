@@ -36,12 +36,27 @@ class SimpleDocumentGenerator:
                 logger.info(f"Loading template from: {template_path}")
                 try:
                     self.doc = Document(template_path)
-                    # Verify the template structure
-                    for p in self.doc.paragraphs:
-                        if "{{Label1" in p.text:
-                            logger.info(f"Successfully loaded template: {template_path}")
-                            return
-                    template_errors.append(f"{template_path}: Template structure not valid")
+                    # Verify the template structure by looking for any of the expected placeholders
+                    template_valid = False
+                    expected_placeholders = [
+                        "{{Label1.AcceptedDate}}",
+                        "{{Label1.Vendor}}",
+                        "{{Label1.ProductName}}",
+                        "{{Label1.Barcode}}",
+                        "{{Label1.QuantityReceived}}"
+                    ]
+                    
+                    # Check both paragraphs and table cells
+                    for element in list(self.doc.paragraphs) + [cell for table in self.doc.tables for row in table.rows for cell in row.cells]:
+                        for paragraph in getattr(element, 'paragraphs', [element]):
+                            text = paragraph.text
+                            if any(placeholder in text for placeholder in expected_placeholders):
+                                template_valid = True
+                                logger.info(f"Successfully loaded template: {template_path}")
+                                return
+                                
+                    if not template_valid:
+                        template_errors.append(f"{template_path}: Template structure not valid - missing required placeholders")
                 except Exception as e:
                     template_errors.append(f"{template_path}: {str(e)}")
                     continue
@@ -156,15 +171,33 @@ class SimpleDocumentGenerator:
             
             logger.info(f"Will generate {total_pages} pages")
             
-            # Store the template first page
+            # Store the template first page by finding any Label1 placeholder
             template_page = None
-            for p in self.doc.paragraphs:
-                if "{{Label1" in p.text:
-                    template_page = p._element.getparent()
+            
+            # Check both paragraphs and table cells for Label1 placeholders
+            for element in list(self.doc.paragraphs) + [cell for table in self.doc.tables for row in table.rows for cell in row.cells]:
+                for paragraph in getattr(element, 'paragraphs', [element]):
+                    if any(pattern in paragraph.text for pattern in [
+                        "{{Label1.AcceptedDate}}",
+                        "{{Label1.Vendor}}",
+                        "{{Label1.ProductName}}",
+                        "{{Label1.Barcode}}",
+                        "{{Label1.QuantityReceived}}"
+                    ]):
+                        # Find the parent page/section
+                        parent = paragraph._element
+                        while parent is not None and parent.tag != '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body':
+                            parent = parent.getparent()
+                        if parent is not None:
+                            template_page = parent
+                            break
+                if template_page:
                     break
             
             if not template_page:
-                return False, "Template format not recognized"
+                return False, "Could not find template page with Label1 placeholders"
+                
+            logger.info("Successfully found template page structure")
             
             # Process records in groups of 4
             for i in range(0, len(records), 4):
