@@ -1022,8 +1022,12 @@ def cleanup_temp_files():
         logger.error(f"Error during cleanup: {e}")
 
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
+    """Generate inventory slip using DocxGenerator"""
     try:
-        # Get vendor name
+        # Import our new generator
+        from src.utils.docgen import DocxGenerator
+        
+        # Get vendor name 
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
         if " - " in vendor_name:
             vendor_name = vendor_name.split(" - ")[1]
@@ -1034,120 +1038,29 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
         outname = f"{today_date}_{vendor_name}_OrderSheet.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
 
-        # Create new document with landscape orientation first
-        doc = Document()
-        section = doc.sections[0]
-        section.orientation = WD_ORIENT.LANDSCAPE
-        section.page_width = Inches(11)
-        section.page_height = Inches(8.5)
+        # Create generator
+        generator = DocxGenerator()
         
-        # Set margins
-        section.left_margin = Inches(0.5)
-        section.right_margin = Inches(0.5)
-        section.top_margin = Inches(0.5)
-        section.bottom_margin = Inches(0.5)
+        if status_callback:
+            status_callback("Creating document...")
 
-        # Add title
-        title = doc.add_paragraph()
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = title.add_run("Order Sheet")
-        run.bold = True
-        run.font.size = Pt(14)
-
-        # Add date and vendor info
-        info = doc.add_paragraph()
-        run = info.add_run(f"Date: {today_date}    Vendor: {vendor_name}")
-        run.font.size = Pt(11)
-
-        # Create table with proper dimensions
-        table = doc.add_table(rows=1, cols=6)
-        table.style = 'Table Grid'
-        table.autofit = False  # Prevent autofit to keep our dimensions
-
-        # Set column widths proportionally
-        widths = [4, 2, 1, 2, 2, 2]  # Total = 13 inches
-        total_width = sum(widths)
-        page_width = 10  # Actual usable width after margins
+        # Generate document with records
+        records = selected_df.to_dict('records')
+        generator.generate_inventory_slip(
+            records=records,
+            vendor_name=vendor_name,
+            date=today_date,
+            rows_per_page=20
+        )
         
-        for i, width in enumerate(widths):
-            for cell in table.columns[i].cells:
-                cell.width = Inches(width * page_width / total_width)
-
-        # Add headers
-        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Accepted Date']
-        for i, header in enumerate(headers):
-            cell = table.cell(0, i)
-            paragraph = cell.paragraphs[0]
-            run = paragraph.add_run(header)
-            run.bold = True
-            run.font.size = Pt(11)
-
-        # Add data rows with pagination
-        rows_per_page = 20  # Adjust based on page size and margins
-        current_row = 0
+        if status_callback:
+            status_callback("Saving document...")
         
-        for _, row in selected_df.iterrows():
-            if current_row > 0 and current_row % rows_per_page == 0:
-                doc.add_page_break()
-                # Add header row in new page
-                # Create table with proper dimensions
-                table = doc.add_table(rows=1, cols=6)
-                table.style = 'Table Grid'
-                table.autofit = False  # Keep autofit false for manual width control
-
-                # Set column widths proportionally for better fit
-                widths = [5, 2, 0.75, 1.5, 1.5, 1.75]  # Adjusted widths for better proportions
-                total_width = sum(widths)
-                page_width = 10  # Actual usable width after margins
-
-                # Apply widths to first table
-                for i, width in enumerate(widths):
-                    for cell in table.columns[i].cells:
-                        cell.width = Inches(width * page_width / total_width)
-
-                # When creating new tables for additional pages, use the same settings
-                if current_row > 0 and current_row % rows_per_page == 0:
-                    doc.add_page_break()
-                    table = doc.add_table(rows=1, cols=6)
-                    table.style = 'Table Grid'
-                    table.autofit = False  # Keep autofit false for consistent width control
-                    
-                    # Apply same widths to new table
-                    for i, width in enumerate(widths):
-                        for cell in table.columns[i].cells:
-                            cell.width = Inches(width * page_width / total_width)
-                current_row += 1
-                
-                # Add headers to new page
-                for i, header in enumerate(headers):
-                    cell = table.cell(0, i)
-                    paragraph = cell.paragraphs[0]
-                    run = paragraph.add_run(header)
-                    run.bold = True
-                    run.font.size = Pt(11)
-
-            row_cells = table.add_row().cells
-            data = [
-                str(row.get('Product Name*', ''))[:100],
-                str(row.get('Barcode*', ''))[:50],
-                str(row.get('Quantity Received*', ''))[:5],
-                str(row.get('Vendor', ''))[:20],
-                str(row.get('Accepted Date', ''))[:10]
-            ]
-            
-            for i, value in enumerate(data):
-                paragraph = row_cells[i].paragraphs[0]
-                run = paragraph.add_run(value)
-                run.font.size = Pt(10)
-            
-            current_row += 1
-
         # Save document
-        doc.save(outpath)
+        if generator.save(outpath):
+            if os.path.exists(outpath):
+                return True, outpath
         
-        if os.path.exists(outpath):
-            return True, outpath
-            
         return False, "Failed to create document"
 
     except Exception as e:
