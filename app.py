@@ -1256,20 +1256,59 @@ def load_from_url(url):
     import traceback
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
-    headers = {'User-Agent': 'Mozilla/5.0 (compatible; InventorySlipsBot/1.0)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; InventorySlipsBot/1.0)',
+        'Accept-Encoding': 'gzip, deflate'  # Support compression
+    }
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
+    retries = Retry(
+        total=5,  # Increased retries
+        backoff_factor=0.5,  # Shorter backoff
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]  # Explicitly allow methods
+    )
+    # Use longer timeout for connection, shorter for read
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=3, pool_maxsize=10)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    
     # Add proxy support for PythonAnywhere
     # See: https://help.pythonanywhere.com/pages/OutboundHttpRequests/
     proxies = {
         'http': 'http://proxy.pythonanywhere.com:3128',
         'https': 'http://proxy.pythonanywhere.com:3128',
     }
+    
     try:
-        # Increase timeout for large files
-        # For debugging, set verify=False to disable SSL verification
-        response = session.get(url, timeout=240, headers=headers, verify=False, proxies=proxies)
+        # First make a HEAD request to check content length
+        head = session.head(url, timeout=30, headers=headers, verify=False, proxies=proxies)
+        content_length = int(head.headers.get('content-length', 0))
+        
+        # If file is large, use streaming
+        if content_length > 5 * 1024 * 1024:  # 5MB
+            response = session.get(
+                url,
+                timeout=(30, 240),  # (connect timeout, read timeout)
+                headers=headers,
+                verify=False,
+                proxies=proxies,
+                stream=True  # Enable streaming
+            )
+            # Read in chunks
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    content += chunk
+            response._content = content  # Set content for json() to work
+        else:
+            # For smaller files, download normally
+            response = session.get(
+                url,
+                timeout=(30, 240),  # (connect timeout, read timeout)
+                headers=headers,
+                verify=False,
+                proxies=proxies
+            )
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
