@@ -23,11 +23,19 @@ class DocumentHandler:
             return False
 
         try:
+            # Sort records by product type and then by product name
+            sorted_records = sorted(records, 
+                key=lambda x: (
+                    str(x.get('Product Type*', '')).lower(),
+                    str(x.get('Product Name*', '')).lower()
+                )
+            )
+            
             # Initialize context
             context = {}
             
             # Create context for the first 4 records (or fewer if less available)
-            chunk = records[:4]
+            chunk = sorted_records[:4]
             
             # Add context for each record in the chunk
             for idx, record in enumerate(chunk, 1):
