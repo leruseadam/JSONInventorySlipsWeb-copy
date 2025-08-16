@@ -189,7 +189,7 @@ function processJsonData() {
             return response.json();
         }
     })
-    .then data => {
+  .then(data => {
         if (data && !data.success) {
             alert('Error: ' + data.message);
         }
