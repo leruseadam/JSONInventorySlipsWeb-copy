@@ -32,50 +32,77 @@ class DocumentHandler:
                     # Add page break between chunks
                     self.doc.add_page_break()
                 
-                # Find all paragraphs and tables in the document
-                all_paragraphs = []
+                # Get all paragraphs from document and tables
+                all_elements = []
                 for paragraph in self.doc.paragraphs:
-                    all_paragraphs.append(paragraph)
+                    all_elements.append(('paragraph', paragraph))
                 for table in self.doc.tables:
                     for row in table.rows:
                         for cell in row.cells:
                             for paragraph in cell.paragraphs:
-                                all_paragraphs.append(paragraph)
+                                all_elements.append(('table_cell', paragraph))
 
                 # Replace placeholders for each record in chunk
                 for idx, record in enumerate(chunk, 1):
                     replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': record.get('Accepted Date', ''),
-                        f'{{{{Label{idx}.Vendor}}}}': record.get('Vendor', 'Unknown Vendor'),
-                        f'{{{{Label{idx}.ProductName}}}}': record.get('Product Name*', ''),
-                        f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode*', ''),
-                        f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('Quantity Received*', ''))
+                        f'Label{idx}.AcceptedDate': record.get('Accepted Date', ''),
+                        f'Label{idx}.Vendor': record.get('Vendor', 'Unknown Vendor'),
+                        f'Label{idx}.ProductName': record.get('Product Name*', ''),
+                        f'Label{idx}.Barcode': record.get('Barcode*', ''),
+                        f'Label{idx}.QuantityReceived': str(record.get('Quantity Received*', ''))
                     }
-                    
-                    # Apply replacements in all paragraphs
-                    for paragraph in all_paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, str(new_text))
-                                    run.font.name = 'Arial'
-                                    run.font.size = Pt(11)
 
-                # Clean up unused placeholders for this chunk
+                    # Process each element
+                    for element_type, paragraph in all_elements:
+                        # Get full text of paragraph by joining runs
+                        full_text = ''.join(run.text for run in paragraph.runs)
+                        needs_update = False
+
+                        # Check if any placeholder exists in the full text
+                        for placeholder, value in replacements.items():
+                            placeholder_pattern = f'{{{{{placeholder}}}}}'
+                            if placeholder_pattern in full_text:
+                                full_text = full_text.replace(placeholder_pattern, str(value))
+                                needs_update = True
+
+                        # If we found and replaced a placeholder, update all runs
+                        if needs_update:
+                            # Clear existing runs
+                            for run in paragraph.runs:
+                                run.text = ''
+                            
+                            # Add new run with replaced text
+                            run = paragraph.add_run(full_text)
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(11)
+
+                # Clean up unused placeholders
                 for idx in range(len(chunk) + 1, 5):
-                    empty_replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': '',
-                        f'{{{{Label{idx}.Vendor}}}}': '',
-                        f'{{{{Label{idx}.ProductName}}}}': '',
-                        f'{{{{Label{idx}.Barcode}}}}': '',
-                        f'{{{{Label{idx}.QuantityReceived}}}}': ''
+                    replacements = {
+                        f'Label{idx}.AcceptedDate': '',
+                        f'Label{idx}.Vendor': '',
+                        f'Label{idx}.ProductName': '',
+                        f'Label{idx}.Barcode': '',
+                        f'Label{idx}.QuantityReceived': ''
                     }
-                    
-                    for paragraph in all_paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in empty_replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, '')
+
+                    for element_type, paragraph in all_elements:
+                        full_text = ''.join(run.text for run in paragraph.runs)
+                        needs_update = False
+
+                        for placeholder, value in replacements.items():
+                            placeholder_pattern = f'{{{{{placeholder}}}}}'
+                            if placeholder_pattern in full_text:
+                                full_text = full_text.replace(placeholder_pattern, '')
+                                needs_update = True
+
+                        if needs_update:
+                            for run in paragraph.runs:
+                                run.text = ''
+                            if full_text.strip():  # Only add non-empty text
+                                run = paragraph.add_run(full_text)
+                                run.font.name = 'Arial'
+                                run.font.size = Pt(11)
 
             return True
 
