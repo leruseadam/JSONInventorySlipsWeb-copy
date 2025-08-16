@@ -6,9 +6,6 @@ import json
 import datetime
 import urllib.request
 import pandas as pd
-from io import BytesIO
-from docx import Document
-from docx.shared import Pt
 import threading
 import configparser
 import webbrowser

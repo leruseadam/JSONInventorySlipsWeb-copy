@@ -316,6 +316,9 @@ def add_security_headers(response):
     
     return response
 
+# Import session storage utilities
+from src.utils.session_storage import store_data, get_data, cleanup_old_files, remove_data
+
 # Configure session for Chrome compatibility and uWSGI
 app.config.update(
     SESSION_COOKIE_SECURE=False,  # Set to True only if using HTTPS
@@ -326,6 +329,9 @@ app.config.update(
     SESSION_REFRESH_EACH_REQUEST=True,
     SESSION_TYPE='filesystem'  # Use filesystem instead of signed cookies
 )
+
+# Clean up old temporary files on startup
+cleanup_old_files()
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
@@ -996,21 +1002,31 @@ def paste_json():
         if result_df is None or result_df.empty:
             return jsonify({'success': False, 'message': 'Could not process pasted JSON data.'}), 400
 
-        # Store data using chunked storage
-        # Clear previous session data to avoid stale info
-        session.pop('df_json', None)
-        session.pop('format_type', None)
-        session.pop('raw_json', None)
-        store_chunked_data('df_json', result_df)
-        # Only store raw data if it's small enough
-        if len(pasted_json) < 2000:
-            store_chunked_data('raw_json', pasted_json)
-        else:
-            store_chunked_data('raw_json', {"type": "large_json", "size": len(pasted_json)})
+        # Clear previous files if they exist
+        if 'df_path' in session:
+            remove_data(session['df_path'])
+        if 'raw_path' in session:
+            remove_data(session['raw_path'])
+            
+        # Store DataFrame data
+        df_json = result_df.to_json(orient='records')
+        df_path = store_data('df_json', df_json, session.id)
+        if not df_path:
+            return jsonify({'success': False, 'message': 'Failed to store data'}), 500
+        session['df_path'] = df_path
+        
+        # Store raw JSON data
+        raw_data = pasted_json if len(pasted_json) < 10000 else {"type": "large_json", "size": len(pasted_json)}
+        raw_path = store_data('raw_json', raw_data, session.id)
+        if raw_path:
+            session['raw_path'] = raw_path
+            
+        # Store format type in session (small enough to keep in cookie)
         session['format_type'] = format_type
 
         return jsonify({'success': True, 'redirect': url_for('data_view')})
     except Exception as e:
+        logger.error(f"Error in paste-json: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
 
 @app.route('/upload-csv', methods=['POST'])
@@ -1561,28 +1577,30 @@ def data_view():
     try:
         # Log session state for debugging
         logger.info(f"Session keys at start of data_view: {list(session.keys())}")
-        logger.info(f"Session format_type: {session.get('format_type')}")
-        logger.info(f"Session df_json_chunks: {session.get('df_json_chunks')}")
-
-        # Clear any stale session data
-        if 'df_json' in session:
-            session.pop('df_json', None)
-
-        # Get chunked data from session with a timeout
-        start_time = time.time()
-        df_json = get_chunked_data('df_json')
+        
+        # Get data file paths from session
+        df_path = session.get('df_path')
         format_type = session.get('format_type')
         
-        # Log time taken to retrieve data
-        logger.info(f"Time taken to retrieve chunked data: {time.time() - start_time:.2f} seconds")
-
-        if df_json is None:
-            logger.error("No data found in session")
+        if not df_path:
+            logger.error("No data path found in session")
             flash('No data available. Please load data first.')
             return redirect(url_for('index'))
-
-        logger.info(f"Retrieved df_json data length: {len(df_json) if df_json else 0}")
-
+            
+        # Retrieve data from temporary storage
+        start_time = time.time()
+        df_json = get_data(df_path)
+        
+        # Log time taken to retrieve data
+        logger.info(f"Time taken to retrieve data: {time.time() - start_time:.2f} seconds")
+        
+        if df_json is None:
+            logger.error("Failed to retrieve data from storage")
+            flash('Error loading data. Please try again.')
+            return redirect(url_for('index'))
+            
+        logger.info(f"Retrieved data length: {len(df_json) if df_json else 0}")
+        
         try:
             if isinstance(df_json, str):
                 from io import StringIO
@@ -1590,7 +1608,7 @@ def data_view():
             elif isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                logger.error(f"Unexpected df_json type: {type(df_json)}")
+                logger.error(f"Unexpected data type: {type(df_json)}")
                 flash('Error: Invalid data format')
                 return redirect(url_for('index'))
 
@@ -1689,11 +1707,15 @@ def generate_slips():
         selected_indices = [int(idx) for idx in selected_indices]
         logger.info(f"Selected indices: {selected_indices}")
         
-        # Load data from session using chunked data
-        df_json = get_chunked_data('df_json')
-        
-        if df_json is None:
+        # Load data from temporary storage
+        df_path = session.get('df_path')
+        if not df_path:
             flash('No data available. Please load data first.')
+            return redirect(url_for('index'))
+            
+        df_json = get_data(df_path)
+        if df_json is None:
+            flash('Failed to retrieve data. Please try again.')
             return redirect(url_for('index'))
         
         # Convert JSON to DataFrame
