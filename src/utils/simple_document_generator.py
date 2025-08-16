@@ -19,11 +19,37 @@ class SimpleDocumentGenerator:
         
     def _load_template(self):
         """Load the exact inventory slip template"""
-        template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                                   'templates', 'documents', 'InventorySlips.docx')
-        if not os.path.exists(template_path):
-            raise ValueError(f"Template not found at: {template_path}")
-        self.doc = Document(template_path)
+        # Try multiple template locations
+        potential_paths = [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                        'templates', 'documents', 'InventorySlips.docx'),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                        'templates', 'documents', 'InventorySlips_old.docx'),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                        'templates', 'documents', 'template_check.docx')
+        ]
+        
+        template_errors = []
+        # Try each path
+        for template_path in potential_paths:
+            if os.path.exists(template_path):
+                logger.info(f"Loading template from: {template_path}")
+                try:
+                    self.doc = Document(template_path)
+                    # Verify the template structure
+                    for p in self.doc.paragraphs:
+                        if "{{Label1" in p.text:
+                            logger.info(f"Successfully loaded template: {template_path}")
+                            return
+                    template_errors.append(f"{template_path}: Template structure not valid")
+                except Exception as e:
+                    template_errors.append(f"{template_path}: {str(e)}")
+                    continue
+            else:
+                template_errors.append(f"{template_path}: File not found")
+        
+        error_details = "\n".join(template_errors)
+        raise ValueError(f"No valid template found. Errors:\n{error_details}")
             
     def _create_table(self, rows=2, cols=2):
         """Create a table with specified dimensions"""
@@ -114,12 +140,21 @@ class SimpleDocumentGenerator:
             if not records:
                 return False, "No records provided"
 
+            logger.info("Starting document generation...")
+            logger.info(f"Number of records to process: {len(records)}")
+
             # Load the template for each new document
-            self._load_template()
+            try:
+                self._load_template()
+            except Exception as e:
+                logger.error(f"Failed to load template: {str(e)}")
+                return False, f"Template error: {str(e)}"
             
             # Calculate total pages needed
             total_pages = (len(records) + 3) // 4  # Ceiling division by 4
             current_page = 1
+            
+            logger.info(f"Will generate {total_pages} pages")
             
             # Store the template first page
             template_page = None
