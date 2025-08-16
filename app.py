@@ -42,15 +42,14 @@ from flask import (
 )
 import requests
 import pandas as pd
+from docxtpl import DocxTemplate
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_ORIENT
 from docx.shared import Pt, Inches
+from docxcompose.composer import Composer
 import configparser
 from werkzeug.utils import secure_filename
-
-# For document generation
-from src.utils.docgen import DocxGenerator
 
 # Local imports
 from src.utils.document_handler import DocumentHandler
@@ -62,79 +61,42 @@ MAX_CHUNK_SIZE = 500  # Reduced from 800 to be safer
 MAX_TOTAL_SIZE = 3000  # Maximum total size after compression
 COMPRESSION_LEVEL = 9  # Maximum compression
 
-def compress_session_data(data, max_size=MAX_TOTAL_SIZE):
-    """Compress data with improved compression, size checks, and memory efficiency"""
+def compress_session_data(data):
+    """Compress data with improved compression and size checks"""
     try:
-        # Start with basic validation
-        if data is None:
-            raise ValueError("Cannot compress None data")
-            
-        # Convert DataFrame efficiently
+        # Convert DataFrame to minimal JSON if needed
         if isinstance(data, pd.DataFrame):
-            # Only keep essential columns and limit precision for floats
-            essential_cols = ['Product Name*', 'Product Type*', 'Quantity Received*', 
-                            'Barcode*', 'Accepted Date', 'Vendor', 'Strain Name']
-            data = data[data.columns.intersection(essential_cols)]
-            
-            # Convert to JSON with minimal settings
-            data = data.to_json(orient='records', 
-                              date_format='iso',
-                              double_precision=2,
-                              default_handler=str)
+            data = data.to_json(orient='records', date_format='iso')
         elif not isinstance(data, str):
-            # For dictionaries and other objects, use minimal JSON encoding
-            data = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
+            data = json.dumps(data, separators=(',', ':'))
 
-        # Initial compression
+        # First level compression
         compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
         
-        # If too large, apply progressive reduction
-        if len(compressed) > max_size:
-            try:
-                parsed = json.loads(data)
-                if isinstance(parsed, list):
-                    # Keep essential data, limit records and field lengths
-                    reduced = []
-                    for item in parsed[:50]:  # Increased from 25 to 50
-                        reduced_item = {}
-                        for k, v in item.items():
-                            # Only keep non-empty values
-                            if v and str(v).strip():
-                                # Truncate based on field type
-                                if k in ['Product Name*', 'Vendor']:
-                                    reduced_item[k] = str(v)[:100]
-                                elif k in ['Barcode*', 'Strain Name']:
-                                    reduced_item[k] = str(v)[:50]
-                                else:
-                                    reduced_item[k] = str(v)[:30]
-                        reduced.append(reduced_item)
-                    data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
-                else:
-                    # For single objects, limit field lengths
-                    reduced = {k: str(v)[:50] for k, v in parsed.items()}
-                    data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
-                    
-                # Try compression again
-                compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
-                
-                # If still too large, apply more aggressive reduction
-                if len(compressed) > max_size:
-                    logger.warning("Data still too large after reduction, applying aggressive truncation")
+        # If still too large, reduce data
+        if len(compressed) > MAX_TOTAL_SIZE:
+            if isinstance(data, str):
+                try:
+                    # Parse JSON to reduce content
+                    parsed = json.loads(data)
                     if isinstance(parsed, list):
-                        reduced = reduced[:25]  # Further reduce to 25 records
-                        data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
-                        compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
-                        
-            except json.JSONDecodeError:
-                # If JSON parsing fails, truncate string with warning
-                logger.warning("JSON parsing failed during compression, truncating data")
-                data = data[:1000] + "...[truncated]"
-                compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+                        # Keep only essential fields and limit records
+                        reduced = []
+                        for item in parsed[:25]:  # Limit to 25 records
+                            reduced_item = {k: str(v)[:50] for k, v in item.items()}  # Truncate values
+                            reduced.append(reduced_item)
+                        data = json.dumps(reduced, separators=(',', ':'))
+                    elif isinstance(parsed, dict):
+                        # Reduce dictionary size
+                        data = json.dumps({k: str(v)[:50] for k, v in parsed.items()})
+                except:
+                    # If JSON parsing fails, truncate string
+                    data = data[:1000] + "...[truncated]"
+            
+            # Compress reduced data
+            compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
 
-        encoded = base64.b64encode(compressed).decode('utf-8')
-        logger.info(f"Compressed data size: {len(encoded)} bytes")
-        return encoded
-        
+        return base64.b64encode(compressed).decode('utf-8')
     except Exception as e:
         logger.error(f"Compression error: {str(e)}")
         raise
@@ -316,38 +278,14 @@ def add_security_headers(response):
     
     return response
 
-# Import session storage utilities
-import uuid
-from flask_session import Session
-from src.utils.session_storage import store_data, get_data, cleanup_old_files, remove_data
-
-# Configure session for Chrome compatibility and uWSGI
+# Configure session for Chrome compatibility
 app.config.update(
     SESSION_COOKIE_SECURE=False,  # Set to True only if using HTTPS
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',  # More permissive than 'Strict' for Chrome
     SESSION_COOKIE_PATH='/',
     PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
-    SESSION_REFRESH_EACH_REQUEST=True,
-    SESSION_TYPE='filesystem',  # Use filesystem instead of signed cookies
-    SESSION_FILE_DIR=os.path.join(tempfile.gettempdir(), 'flask_session'),
-    SESSION_FILE_THRESHOLD=500  # Maximum number of session files
 )
-
-# Ensure session directory exists
-os.makedirs(app.config['SESSION_FILE_DIR'], exist_ok=True)
-
-# Initialize Flask-Session
-Session(app)
-
-# Clean up old temporary files on startup
-cleanup_old_files()
-
-# Initialize session ID if needed
-@app.before_request
-def init_session():
-    if 'session_id' not in session:
-        session['session_id'] = str(uuid.uuid4())
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
@@ -482,85 +420,171 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         return False, "No data selected."
 
 def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
-    """Generate inventory slips using template-based DocumentHandler"""
+    # ...existing code...
+    
     try:
-        from src.utils.document_handler import DocumentHandler
-
-        if selected_df.empty:
-            if status_callback:
-                status_callback("Error: No data selected.")
-            return False, "No data selected."
-
         # Get vendor name from first row
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
-        
-        # Get today's date
-        today_date = datetime.now().strftime("%Y%m%d")
-        
         # Clean vendor name (remove special characters and spaces)
         vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
-        
+        # Get today's date
+        today_date = datetime.now().strftime("%Y%m%d")
         # Create filename
         outname = f"{today_date}_{vendor_name}_Slips.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
         
+        # ...rest of existing code...
+        
+        # Get settings from config
+        items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
+        template_path = config['PATHS'].get('template_path')
+        if not template_path or not os.path.exists(template_path):
+            template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
+            if not os.path.exists(template_path):
+                raise ValueError(f"Template file not found at: {template_path}")
+        
         if status_callback:
             status_callback("Processing data...")
 
-        # Initialize document handler
-        doc_handler = DocumentHandler()
+        # Clean and validate the data
+        records = selected_df.to_dict(orient="records")
+        cleaned_records = []
         
-        # Load template
-        template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
-        if not os.path.exists(template_path):
-            return False, f"Template not found at {template_path}"
-            
-        doc_handler.create_document(template_path)
+        for record in records:
+            cleaned_record = {}
+            for key, value in record.items():
+                # Convert all values to strings and clean them
+                if value is None:
+                    cleaned_record[key] = ""
+                else:
+                    # Remove any problematic characters and limit length
+                    cleaned_value = str(value).strip()
+                    # Remove any non-printable characters except newlines and tabs
+                    cleaned_value = ''.join(char for char in cleaned_value if char.isprintable() or char in '\n\t')
+                    # Limit length to prevent overflow
+                    cleaned_record[key] = cleaned_value[:200] if len(cleaned_value) > 200 else cleaned_value
+            cleaned_records.append(cleaned_record)
+        
+        pages = []
 
-        # Process records in chunks of 4 (for template layout)
-        records = []
-        for chunk_start in range(0, len(selected_df), 4):
-            chunk = selected_df.iloc[chunk_start:chunk_start+4]
-            for _, row in chunk.iterrows():
-                # Get vendor info, using full vendor name if available
-                vendor_name = row.get("Vendor", "")
-                if " - " in vendor_name:
-                    vendor_name = vendor_name.split(" - ")[1]
+        # Process records in chunks of 4 (or configured size)
+        total_chunks = (len(cleaned_records) + items_per_page - 1) // items_per_page
+        current_chunk = 0
+
+        for chunk in chunk_records(cleaned_records, items_per_page):
+            current_chunk += 1
+            if progress_callback:
+                progress = (current_chunk / total_chunks) * 50
+                progress_callback(int(progress))
+
+            if status_callback:
+                status_callback(f"Generating page {current_chunk} of {total_chunks}...")
+
+            try:
+                # Create a fresh template instance for each chunk
+                tpl = DocxTemplate(template_path)
+                context = {}
+
+                # Fill context with records - modified vendor handling
+                for idx, record in enumerate(chunk, 1):
+                    # Get vendor info, using full vendor name if available
+                    vendor_name = record.get("Vendor", "")
+                    # If vendor is in format "license - name", extract just the name
+                    if " - " in vendor_name:
+                        vendor_name = vendor_name.split(" - ")[1]
+                    
+                    # Ensure all values are strings and not too long
+                    context[f"Label{idx}"] = {
+                        "ProductName": str(record.get("Product Name*", ""))[:100],
+                        "Barcode": str(record.get("Barcode*", ""))[:50],
+                        "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
+                        "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
+                        "Vendor": str(vendor_name or "Unknown Vendor")[:50],
+                        "ProductType": str(record.get("Product Type*", ""))[:50]
+                    }
+
+                # Fill remaining slots with empty values
+                for i in range(len(chunk) + 1, items_per_page + 1):
+                    context[f"Label{i}"] = {
+                        "ProductName": "",
+                        "Barcode": "",
+                        "AcceptedDate": "",
+                        "QuantityReceived": "",
+                        "Vendor": "",
+                        "ProductType": ""
+                    }
+
+                # Render template with context
+                tpl.render(context)
                 
-                record = {
-                    "Product Name*": str(row.get("Product Name*", ""))[:100],
-                    "Barcode*": str(row.get("Barcode*", ""))[:50],
-                    "Accepted Date": str(row.get("Accepted Date", ""))[:20],
-                    "Quantity Received*": str(row.get("Quantity Received*", ""))[:20],
-                    "Vendor": str(vendor_name or "Unknown Vendor")[:50],
-                    "Product Type*": str(row.get("Product Type*", ""))[:50]
-                }
-                records.append(record)
+                # Save to BytesIO with proper error handling
+                output = BytesIO()
+                tpl.save(output)
+                output.seek(0)
+                
+                # Create document from BytesIO
+                doc = Document(output)
+                pages.append(doc)
 
+            except Exception as e:
+                logger.error(f"Error generating page {current_chunk}: {e}")
+                raise ValueError(f"Error generating page {current_chunk}: {e}")
+
+        if not pages:
+            return False, "No documents generated."
+
+        # Combine pages with better error handling
         if status_callback:
-            status_callback("Generating document...")
+            status_callback("Combining pages...")
 
-        # Add content to document
-        if not doc_handler.add_content_to_table(records):
-            return False, "Failed to add content to document"
-
-        if status_callback:
-            status_callback("Saving document...")
-
-        # Save document
-        if doc_handler.save_document(outpath):
-            if os.path.exists(outpath):
-                # Adjust font sizes
-                if status_callback:
-                    status_callback("Adjusting formatting...")
-                adjust_table_font_sizes(outpath)
-
+        try:
+            master = pages[0]
+            composer = Composer(master)
+            
+            for i, doc in enumerate(pages[1:]):
                 if progress_callback:
-                    progress_callback(100)
+                    progress = 50 + ((i + 1) / len(pages[1:])) * 40
+                    progress_callback(int(progress))
+                
+                # Add page break before appending
+                if hasattr(composer, 'doc') and composer.doc.paragraphs:
+                    composer.doc.paragraphs[-1].add_run().add_break()
+                
+                composer.append(doc)
 
-                return True, outpath
+            # Save final document with proper error handling
+            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+            outname = f"inventory_slips_{now}.docx"
+            outpath = os.path.join(config['PATHS']['output_dir'], outname)
 
-        return False, "Failed to create document"
+            if status_callback:
+                status_callback("Saving document...")
+
+            # Save to a temporary file first, then move to final location
+            temp_path = outpath + ".tmp"
+            master.save(temp_path)
+            
+            # Validate the saved document
+            if not validate_docx(temp_path):
+                raise ValueError("Generated document is corrupted")
+            
+            # Move to final location
+            import shutil
+            shutil.move(temp_path, outpath)
+
+            # Adjust font sizes
+            if status_callback:
+                status_callback("Adjusting formatting...")
+            adjust_table_font_sizes(outpath)
+
+            if progress_callback:
+                progress_callback(100)
+
+            return True, outpath
+
+        except Exception as e:
+            logger.error(f"Error combining or saving documents: {e}")
+            raise ValueError(f"Error combining or saving documents: {e}")
 
     except Exception as e:
         if status_callback:
@@ -959,12 +983,8 @@ def cleanup_temp_files():
         logger.error(f"Error during cleanup: {e}")
 
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
-    """Generate inventory slip using DocxGenerator"""
     try:
-        # Import our new generator
-        from src.utils.docgen import DocxGenerator
-        
-        # Get vendor name 
+        # Get vendor name
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
         if " - " in vendor_name:
             vendor_name = vendor_name.split(" - ")[1]
@@ -975,29 +995,120 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
         outname = f"{today_date}_{vendor_name}_OrderSheet.docx"
         outpath = os.path.join(config['PATHS']['output_dir'], outname)
 
-        # Create generator
-        generator = DocxGenerator()
+        # Create new document with landscape orientation first
+        doc = Document()
+        section = doc.sections[0]
+        section.orientation = WD_ORIENT.LANDSCAPE
+        section.page_width = Inches(11)
+        section.page_height = Inches(8.5)
         
-        if status_callback:
-            status_callback("Creating document...")
+        # Set margins
+        section.left_margin = Inches(0.5)
+        section.right_margin = Inches(0.5)
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.5)
 
-        # Generate document with records
-        records = selected_df.to_dict('records')
-        generator.generate_inventory_slip(
-            records=records,
-            vendor_name=vendor_name,
-            date=today_date,
-            rows_per_page=20
-        )
+        # Add title
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.add_run("Order Sheet")
+        run.bold = True
+        run.font.size = Pt(14)
+
+        # Add date and vendor info
+        info = doc.add_paragraph()
+        run = info.add_run(f"Date: {today_date}    Vendor: {vendor_name}")
+        run.font.size = Pt(11)
+
+        # Create table with proper dimensions
+        table = doc.add_table(rows=1, cols=6)
+        table.style = 'Table Grid'
+        table.autofit = False  # Prevent autofit to keep our dimensions
+
+        # Set column widths proportionally
+        widths = [4, 2, 1, 2, 2, 2]  # Total = 13 inches
+        total_width = sum(widths)
+        page_width = 10  # Actual usable width after margins
         
-        if status_callback:
-            status_callback("Saving document...")
+        for i, width in enumerate(widths):
+            for cell in table.columns[i].cells:
+                cell.width = Inches(width * page_width / total_width)
+
+        # Add headers
+        headers = ['Product Name', 'Barcode', 'Quantity', 'Vendor', 'Accepted Date']
+        for i, header in enumerate(headers):
+            cell = table.cell(0, i)
+            paragraph = cell.paragraphs[0]
+            run = paragraph.add_run(header)
+            run.bold = True
+            run.font.size = Pt(11)
+
+        # Add data rows with pagination
+        rows_per_page = 20  # Adjust based on page size and margins
+        current_row = 0
         
+        for _, row in selected_df.iterrows():
+            if current_row > 0 and current_row % rows_per_page == 0:
+                doc.add_page_break()
+                # Add header row in new page
+                # Create table with proper dimensions
+                table = doc.add_table(rows=1, cols=6)
+                table.style = 'Table Grid'
+                table.autofit = False  # Keep autofit false for manual width control
+
+                # Set column widths proportionally for better fit
+                widths = [5, 2, 0.75, 1.5, 1.5, 1.75]  # Adjusted widths for better proportions
+                total_width = sum(widths)
+                page_width = 10  # Actual usable width after margins
+
+                # Apply widths to first table
+                for i, width in enumerate(widths):
+                    for cell in table.columns[i].cells:
+                        cell.width = Inches(width * page_width / total_width)
+
+                # When creating new tables for additional pages, use the same settings
+                if current_row > 0 and current_row % rows_per_page == 0:
+                    doc.add_page_break()
+                    table = doc.add_table(rows=1, cols=6)
+                    table.style = 'Table Grid'
+                    table.autofit = False  # Keep autofit false for consistent width control
+                    
+                    # Apply same widths to new table
+                    for i, width in enumerate(widths):
+                        for cell in table.columns[i].cells:
+                            cell.width = Inches(width * page_width / total_width)
+                current_row += 1
+                
+                # Add headers to new page
+                for i, header in enumerate(headers):
+                    cell = table.cell(0, i)
+                    paragraph = cell.paragraphs[0]
+                    run = paragraph.add_run(header)
+                    run.bold = True
+                    run.font.size = Pt(11)
+
+            row_cells = table.add_row().cells
+            data = [
+                str(row.get('Product Name*', ''))[:100],
+                str(row.get('Barcode*', ''))[:50],
+                str(row.get('Quantity Received*', ''))[:5],
+                str(row.get('Vendor', ''))[:20],
+                str(row.get('Accepted Date', ''))[:10]
+            ]
+            
+            for i, value in enumerate(data):
+                paragraph = row_cells[i].paragraphs[0]
+                run = paragraph.add_run(value)
+                run.font.size = Pt(10)
+            
+            current_row += 1
+
         # Save document
-        if generator.save(outpath):
-            if os.path.exists(outpath):
-                return True, outpath
+        doc.save(outpath)
         
+        if os.path.exists(outpath):
+            return True, outpath
+            
         return False, "Failed to create document"
 
     except Exception as e:
@@ -1026,31 +1137,17 @@ def paste_json():
         if result_df is None or result_df.empty:
             return jsonify({'success': False, 'message': 'Could not process pasted JSON data.'}), 400
 
-        # Clear previous files if they exist
-        if 'df_path' in session:
-            remove_data(session['df_path'])
-        if 'raw_path' in session:
-            remove_data(session['raw_path'])
-            
-        # Store DataFrame data
-        df_json = result_df.to_json(orient='records')
-        df_path = store_data('df_json', df_json, session.id)
-        if not df_path:
-            return jsonify({'success': False, 'message': 'Failed to store data'}), 500
-        session['df_path'] = df_path
-        
-        # Store raw JSON data
-        raw_data = pasted_json if len(pasted_json) < 10000 else {"type": "large_json", "size": len(pasted_json)}
-        raw_path = store_data('raw_json', raw_data, session.id)
-        if raw_path:
-            session['raw_path'] = raw_path
-            
-        # Store format type in session (small enough to keep in cookie)
+        # Store data using chunked storage
+        store_chunked_data('df_json', result_df)
+        # Only store raw data if it's small enough
+        if len(pasted_json) < 2000:
+            store_chunked_data('raw_json', pasted_json)
+        else:
+            store_chunked_data('raw_json', {"type": "large_json", "size": len(pasted_json)})
         session['format_type'] = format_type
 
         return jsonify({'success': True, 'redirect': url_for('data_view')})
     except Exception as e:
-        logger.error(f"Error in paste-json: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': f'Error: {str(e)}'}), 500
 
 @app.route('/upload-csv', methods=['POST'])
@@ -1100,78 +1197,19 @@ def load_url():
         if not url:
             flash('Please enter a URL')
             return redirect(url_for('index'))
-
-        logger.info(f"URL loaded: {url}")
-        logger.info(f"Attempting to load URL: {url}")
+            
         result_df, format_type, raw_data = load_from_url(url)
-
-        if result_df is None:
-            logger.error(f"load_from_url returned None for DataFrame. Possible network or format error.")
-            flash('Failed to load data from URL. Please check the file size, format, or try again later.')
-            return redirect(url_for('index'))
-
-        # Initialize session if needed
-        if 'session_id' not in session:
-            session['session_id'] = str(uuid.uuid4())
+        
+        # Clear any existing data first
+        for key in ['df_json', 'raw_json']:
+            clear_chunked_data(key)
             
-        # Clear any existing data
-        if 'df_path' in session:
-            remove_data(session['df_path'])
-        if 'raw_path' in session:
-            remove_data(session['raw_path'])
-            
-        # Don't clear entire session, just data paths
-        session.pop('df_path', None)
-        session.pop('raw_path', None)
-
-        # Limit very large datasets
-        if len(result_df) > 200:
-            logger.warning(f"Large dataset detected ({len(result_df)} rows). Limiting to first 200 rows.")
-            result_df = result_df.head(200)
-
-        try:
-            # Store DataFrame data with session ID
-            df_json = result_df.to_json(orient='records', date_format='iso')
-            df_path = store_data('df_json', df_json, session['session_id'])
-            if not df_path:
-                logger.error("Failed to store DataFrame data")
-                flash('Error storing data. Please try again.')
-                return redirect(url_for('index'))
-            session['df_path'] = df_path
-            logger.info(f"DataFrame stored at {df_path}")
-            
-            # Store format type (small enough for session)
-            session['format_type'] = format_type
-            
-            # Store minimal raw data for debugging
-            if raw_data:
-                try:
-                    minimal_data = {
-                        'type': format_type,
-                        'size': len(json.dumps(raw_data)),
-                        'row_count': len(result_df)
-                    }
-                    raw_path = store_data('raw_json', minimal_data, session.id)
-                    if raw_path:
-                        session['raw_path'] = raw_path
-                except Exception as e:
-                    logger.warning(f"Could not store raw data info: {e}")
-            
-            # Log storage details
-            logger.info(f"Data stored successfully, format_type={format_type}")
-            
-        except Exception as e:
-            logger.error(f"Error compressing/storing data: {e}")
-            flash('Error storing data. Please try again.')
-            return redirect(url_for('index'))
-
-        logger.info(f"Successfully loaded and stored data from URL: {url}")
-        response = redirect(url_for('data_view'))
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        return response
-
+        # Store new data in chunks
+        if not store_chunked_data('df_json', result_df):
+            raise Exception("Failed to store DataFrame")
+        return redirect(url_for('data_view'))
+        
     except Exception as e:
-        logger.error(f"Exception in /load-url: {str(e)}", exc_info=True)
         flash(f'Error loading data: {str(e)}')
         return redirect(url_for('index'))
     
@@ -1182,25 +1220,11 @@ def handle_bamboo_url(url):
             flash('Could not process Bamboo data from URL', 'error')
             return redirect(url_for('index'))
         
-        # Clear any existing data
-        if 'df_path' in session:
-            remove_data(session['df_path'])
-        if 'raw_path' in session:
-            remove_data(session['raw_path'])
-            
-        # Store DataFrame data
-        df_json = result_df.to_json(orient='records')
-        df_path = store_data('df_json', df_json, session.id)
-        if not df_path:
-            flash('Failed to store data', 'error')
-            return redirect(url_for('index'))
-        session['df_path'] = df_path
+        store_chunked_data('df_json', result_df)
         
         # Store raw data for transfer info extraction
         if raw_data:
-            raw_path = store_data('raw_json', raw_data, session.id)
-            if raw_path:
-                session['raw_path'] = raw_path
+            store_chunked_data('raw_json', json.dumps(raw_data))
         
         session['format_type'] = format_type
         flash(f'{format_type} data loaded successfully', 'success')
@@ -1211,356 +1235,11 @@ def handle_bamboo_url(url):
         return redirect(url_for('index'))
 
 def load_from_url(url):
-    # Log the URL being loaded for debugging
-    logger.info(f"Loading data from URL: {url}")
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
     import traceback
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    import urllib3
-    import socket
-    import ssl
-    import certifi
-    from urllib3.connection import HTTPConnection
-
-    # Configure global SSL context
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
-    ssl_context.verify_mode = ssl.CERT_REQUIRED
-    ssl_context.check_hostname = True
-
-    # Configure urllib3 to use the secure context by default
-    urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
-    
-    # Optionally import SOCKS support
     try:
-        import socks
-        from urllib3.contrib.socks import SOCKSProxyManager
-        SOCKS_AVAILABLE = True
-    except ImportError:
-        SOCKS_AVAILABLE = False
-        logger.info("SOCKS proxy support not available - falling back to direct/HTTP proxy")
-    
-    class SSLAdapter(HTTPAdapter):
-        def init_poolmanager(self, *args, **kwargs):
-            kwargs['ssl_context'] = ssl_context
-            return super(SSLAdapter, self).init_poolmanager(*args, **kwargs)
-            
-        def proxy_manager_for(self, *args, **kwargs):
-            kwargs['ssl_context'] = ssl_context
-            return super(SSLAdapter, self).proxy_manager_for(*args, **kwargs)
-    
-    def try_direct_connection(url, timeout=60):
-        """Try to connect directly without proxy"""
-        try:
-            session = requests.Session()
-            
-            class SSLAdapter(HTTPAdapter):
-                def init_poolmanager(self, *args, **kwargs):
-                    kwargs['ssl_context'] = ssl_context
-                    return super().init_poolmanager(*args, **kwargs)
-
-            # Use our custom adapter with proper SSL context
-            adapter = SSLAdapter(max_retries=3)
-            session.mount('https://', adapter)
-            
-            # Set verify to the path to certificates, never a boolean
-            cert_path = certifi.where()
-            if not isinstance(cert_path, str):
-                logger.error("Invalid certificate path from certifi")
-                raise ValueError("Invalid SSL certificate path")
-                
-            session.verify = cert_path
-            
-            response = session.get(url, timeout=timeout)
-            response.raise_for_status()  # Raise exception for bad status codes
-            return response
-            
-        except requests.exceptions.SSLError as e:
-            logger.error(f"SSL verification failed: {str(e)}")
-            # Always fail on SSL errors in production
-            if os.environ.get('FLASK_ENV') != 'development':
-                raise
-            
-            # Only attempt unverified connection in development
-            logger.warning("Development environment detected - attempting unverified connection")
-            try:
-                session = requests.Session()
-                response = session.get(url, timeout=timeout, verify=False)
-                response.raise_for_status()
-                return response
-            except Exception as fallback_e:
-                logger.error(f"Unverified connection also failed: {str(fallback_e)}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Direct connection failed: {str(e)}")
-            return None
-            
-    def try_socks_connection(url, timeout=60):
-        """Try to connect using SOCKS proxy"""
-        if not SOCKS_AVAILABLE:
-            logger.warning("SOCKS proxy support not available")
-            return None
-            
-        try:
-            proxy = SOCKSProxyManager(
-                'socks5h://proxy.pythonanywhere.com:3128',
-                username=None,
-                password=None,
-                timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                ssl_context=ssl_context,
-                ca_certs=certifi.where()
-            )
-            response = proxy.request('GET', url)
-            return response
-        except urllib3.exceptions.SSLError as e:
-            logger.warning(f"SOCKS proxy SSL error: {str(e)}")
-            # Fall back to unverified only in development
-            if os.environ.get('FLASK_ENV') == 'development':
-                logger.warning("Development environment detected - attempting unverified SOCKS connection")
-                proxy = urllib3.SOCKSProxyManager(
-                    'socks5h://proxy.pythonanywhere.com:3128',
-                    username=None,
-                    password=None,
-                    timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                    ssl_context=ssl._create_unverified_context()
-                )
-                return proxy.request('GET', url)
-            return None
-        except Exception as e:
-            logger.warning(f"SOCKS proxy connection failed: {str(e)}")
-            return None
-            
-    # Never suppress SSL warnings
-    import urllib3
-    urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
-
-    # Try different connection methods in order
-    logger.info("Attempting to load URL with multiple methods...")
-    
-    # 1. Try direct connection first with proper SSL verification
-    logger.info("Trying direct connection with SSL verification...")
-    response = try_direct_connection(url)
-    if response and response.status_code == 200:
-        logger.info("Direct connection successful")
-        return process_response(response)
-        
-    # 2. Try HTTP proxy with SSL verification
-    logger.info("Trying HTTP proxy with SSL verification...")
-    session = requests.Session()
-    
-    # More aggressive retry strategy with lower timeouts
-    retries = Retry(
-        total=3,  # Reduced total retries to fail faster
-        backoff_factor=0.5,  # Shorter backoff between retries
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "HEAD", "OPTIONS"],
-        raise_on_status=True,
-        respect_retry_after_header=True
-    )
-    
-    # Configure proxy settings with shorter timeout
-    proxies = {
-        'http': 'http://proxy.pythonanywhere.com:3128',
-        'https': 'http://proxy.pythonanywhere.com:3128',
-    }
-    
-    # Configure session with custom SSL adapter
-    class SSLAdapter(HTTPAdapter):
-        def init_poolmanager(self, *args, **kwargs):
-            kwargs['ssl_context'] = ssl_context
-            kwargs['timeout'] = urllib3.Timeout(connect=20, read=40)  # Shorter timeouts
-            return super().init_poolmanager(*args, **kwargs)
-        
-        def proxy_manager_for(self, *args, **kwargs):
-            kwargs['ssl_context'] = ssl_context
-            kwargs['timeout'] = urllib3.Timeout(connect=20, read=40)  # Shorter timeouts
-            return super().proxy_manager_for(*args, **kwargs)
-    
-    # Use our custom adapter with optimized settings
-    adapter = SSLAdapter(
-        max_retries=retries,
-        pool_connections=5,   # Reduced pool size
-        pool_maxsize=5,      # Reduced pool size
-        pool_block=False     # Don't block when pool is full
-    )
-    
-    session.mount('https://', adapter)
-    session.verify = certifi.where()
-    
-    try:
-        # Use more granular timeout settings
-        response = session.get(
-            url,
-            timeout=(20, 40),  # Shorter timeouts (connect, read)
-            proxies=proxies,
-            verify=certifi.where(),  # Use certifi path explicitly
-            stream=True,
-            allow_redirects=True,
-            headers={
-                'User-Agent': 'InventorySlipsBot/1.0',
-                'Accept': 'application/json, text/csv, */*',
-                'Connection': 'close'  # Don't keep connection alive
-            }
-        )
-        
-        if response.status_code == 200:
-            logger.info("HTTP proxy connection successful")
-            return process_response(response)
-    except Exception as e:
-        logger.warning(f"HTTP proxy failed: {str(e)}")
-    
-    # 3. Try SOCKS proxy
-    logger.info("Trying SOCKS proxy...")
-    response = try_socks_connection(url)
-    if response and response.status_code == 200:
-        logger.info("SOCKS proxy connection successful")
-        return process_response(response)
-    
-    # If all methods fail, raise error
-    raise ValueError("All connection methods failed")
-
-def process_response(response):
-    """Process the response from any connection method"""
-    try:
-        content_type = response.headers.get('Content-Type', '').lower()
-        
-        if 'application/json' in content_type or str(response.url).lower().endswith('.json'):
-            data = response.json()
-            df, format_type = parse_inventory_json(data)
-            return df, format_type, data
-            
-        elif 'text/csv' in content_type or str(response.url).lower().endswith('.csv'):
-            df = pd.read_csv(BytesIO(response.content))
-            df, msg = process_csv_data(df)
-            return df, 'CSV', None
-            
-        else:
-            # Try to parse as JSON first, then CSV
-            try:
-                data = response.json()
-                df, format_type = parse_inventory_json(data)
-                return df, format_type, data
-            except Exception as e_json:
-                try:
-                    df = pd.read_csv(BytesIO(response.content))
-                    df, msg = process_csv_data(df)
-                    return df, 'CSV', None
-                except Exception as e_csv:
-                    raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
-    except Exception as e:
-        logger.error(f"Error processing response: {str(e)}")
-        raise
-    
-    # Create a custom connection class with longer timeouts
-    class CustomHTTPConnection(HTTPConnection):
-        def __init__(self, *args, **kwargs):
-            timeout = kwargs.pop('timeout', None)
-            super().__init__(*args, **kwargs)
-            if timeout is None:
-                timeout = socket.getdefaulttimeout()
-            # Force longer timeouts
-            self.timeout = timeout
-            
-        def connect(self):
-            # Set TCP keepalive on the socket
-            sock = socket.create_connection(
-                (self._dns_host, self.port),
-                timeout=self.timeout,
-                source_address=None
-            )
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            # Linux specific: set TCP keepalive parameters
-            try:
-                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 60)
-                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPINTVL, 10)
-                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 6)
-            except AttributeError:
-                pass  # Not on Linux
-            self.sock = sock
-    
-    class CustomPoolManager(urllib3.PoolManager):
-        def _new_pool(self, scheme, host, port, request_context=None):
-            kwargs = self.connection_pool_kw.copy()
-            kwargs['timeout'] = 300  # 5 minutes total timeout
-            kwargs['retries'] = 3
-            pool = urllib3.HTTPConnectionPool(
-                host,
-                port,
-                timeout=300,
-                strict=True,
-                **kwargs
-            )
-            pool.ConnectionCls = CustomHTTPConnection
-            return pool
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (compatible; InventorySlipsBot/1.0)',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive'
-    }
-    
-    session = requests.Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"],
-        respect_retry_after_header=True
-    )
-    
-    # Use custom connection pool
-    adapter = HTTPAdapter(
-        max_retries=retries,
-        pool_connections=1,  # Limit connections
-        pool_maxsize=1,
-        pool_block=True
-    )
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
-    
-    # Add proxy support for PythonAnywhere
-    proxies = {
-        'http': 'http://proxy.pythonanywhere.com:3128',
-        'https': 'http://proxy.pythonanywhere.com:3128',
-    }
-    
-    try:
-        # Skip HEAD request and go straight for the data
-        response = session.get(
-            url,
-            timeout=300,  # Single long timeout
-            headers=headers,
-            verify=False,
-            proxies=proxies,
-            stream=True  # Always use streaming
-        )
-        
-        # Read in small chunks with progress logging
-        content = b''
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024  # 1KB
-        
-        if total_size > 0:
-            for chunk in response.iter_content(chunk_size=block_size):
-                if chunk:
-                    content += chunk
-                    if len(content) % (1024 * 1024) == 0:  # Log every MB
-                        logger.info(f"Downloaded {len(content) // (1024*1024)}MB of {total_size // (1024*1024)}MB")
-        else:
-            # If no content length, just read chunks
-            for chunk in response.iter_content(chunk_size=block_size):
-                if chunk:
-                    content += chunk
-                    
-        response._content = content  # Set content for json() to work
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as e:
-            logger.error(f"HTTP error {response.status_code}: {response.text}")
-            logger.error(f"Response headers: {response.headers}")
-            logger.error(f"Exception details: {str(e)}")
-            return None, None, None  # Prevent 502 by returning gracefully
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
             try:
@@ -1599,10 +1278,6 @@ def process_response(response):
                     raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error loading URL: {url}\n{traceback.format_exc()}")
-        if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"Network error response: {e.response.text}")
-            logger.error(f"Network error headers: {e.response.headers}")
-        logger.error(f"Exception details: {str(e)}")
         raise ValueError(f"Network error loading URL: {e}")
     except Exception as e:
         logger.error(f"General error loading data from URL: {url}\n{traceback.format_exc()}")
@@ -1614,68 +1289,22 @@ def process_response(response):
 @app.route('/data-view')
 def data_view():
     try:
-        # Log session state for debugging
-        logger.info(f"Session keys at start of data_view: {list(session.keys())}")
-        logger.info(f"Session ID: {session.get('session_id')}")
-        
-        # Ensure session is initialized
-        if 'session_id' not in session:
-            session['session_id'] = str(uuid.uuid4())
-            logger.info(f"New session ID created: {session['session_id']}")
-        
-        # Get data file paths from session
-        df_path = session.get('df_path')
+        # Get chunked data from session
+        df_json = get_chunked_data('df_json')
         format_type = session.get('format_type')
-        
-        if not df_path:
-            logger.error("No data path found in session")
+
+        if df_json is None:
             flash('No data available. Please load data first.')
             return redirect(url_for('index'))
-            
-        # Verify the file exists
-        if not os.path.exists(df_path):
-            logger.error(f"Data file not found at path: {df_path}")
-            flash('Data file not found. Please reload your data.')
-            return redirect(url_for('index'))
-            
-        # Retrieve data from temporary storage
-        start_time = time.time()
-        df_json = get_data(df_path)
-        
-        # Log time taken to retrieve data
-        logger.info(f"Time taken to retrieve data: {time.time() - start_time:.2f} seconds")
-        
-        if df_json is None:
-            logger.error("Failed to retrieve data from storage")
-            flash('Error loading data. Please try again.')
-            return redirect(url_for('index'))
-            
-        logger.info(f"Retrieved data length: {len(df_json) if df_json else 0}")
-        
+
         try:
-            if isinstance(df_json, str):
-                from io import StringIO
-                df = pd.read_json(StringIO(df_json), orient='records')
-            elif isinstance(df_json, list):
+            if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                logger.error(f"Unexpected data type: {type(df_json)}")
-                flash('Error: Invalid data format')
-                return redirect(url_for('index'))
-
-            # Validate DataFrame
-            if df.empty:
-                logger.error("Empty DataFrame created")
-                flash('Error: No data found in the loaded file')
-                return redirect(url_for('index'))
-
-            # Debug logging
-            logger.info(f"DataFrame shape: {df.shape}")
-            logger.info(f"DataFrame columns: {df.columns.tolist()}")
-            logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
-            logger.info(f"First row vendor: {df.iloc[0].get('Vendor', 'Unknown')}")
+                    from io import StringIO
+                    df = pd.read_json(StringIO(df_json), orient='records')
         except Exception as e:
-            logger.error(f"Error parsing JSON data: {str(e)}", exc_info=True)
+            logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
             return redirect(url_for('index'))
         
@@ -1758,15 +1387,11 @@ def generate_slips():
         selected_indices = [int(idx) for idx in selected_indices]
         logger.info(f"Selected indices: {selected_indices}")
         
-        # Load data from temporary storage
-        df_path = session.get('df_path')
-        if not df_path:
-            flash('No data available. Please load data first.')
-            return redirect(url_for('index'))
-            
-        df_json = get_data(df_path)
+        # Load data from session using chunked data
+        df_json = get_chunked_data('df_json')
+        
         if df_json is None:
-            flash('Failed to retrieve data. Please try again.')
+            flash('No data available. Please load data first.')
             return redirect(url_for('index'))
         
         # Convert JSON to DataFrame
@@ -2480,7 +2105,7 @@ if __name__ == '__main__':
                         # Try Chrome first with --new-window flag
                         chrome_path = ""
                         if sys.platform == "darwin":  # macOS
-                            chrome_path = r'open -a /Applications/Google\ Chrome.app %s'
+                            chrome_path = 'open -a /Applications/Google\ Chrome.app %s'
                         elif sys.platform == "win32":  # Windows
                             chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
                         
