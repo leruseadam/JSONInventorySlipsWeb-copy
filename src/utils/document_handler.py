@@ -54,22 +54,29 @@ class DocumentHandler:
 
                     # Process each element
                     for element_type, paragraph in all_elements:
-                        # First collect all text from all runs to check for placeholders
+                        # First collect all text from all runs
                         runs_text = []
                         original_runs = list(paragraph.runs)
                         for run in original_runs:
                             runs_text.append(run.text)
                         full_text = ''.join(runs_text)
-
+                        
                         # Check if any replacements are needed
                         working_text = full_text
                         needs_update = False
                         
+                        # Try different placeholder patterns
                         for placeholder, value in replacements.items():
-                            placeholder_pattern = f'{{{{{placeholder}}}}}'
-                            if placeholder_pattern in working_text:
-                                working_text = working_text.replace(placeholder_pattern, str(value))
-                                needs_update = True                        # If we found and replaced a placeholder, update all runs
+                            patterns = [
+                                f'{{{{ {placeholder} }}}}',  # {{ Label1.ProductName }}
+                                f'{{{{{placeholder}}}}}',    # {{Label1.ProductName}}
+                                f'{{ {placeholder} }}',      # {{ Label1.ProductName }}
+                                f'{{{placeholder}}}',        # {Label1.ProductName}
+                            ]
+                            for pattern in patterns:
+                                if pattern in working_text:
+                                    working_text = working_text.replace(pattern, str(value))
+                                    needs_update = True                        # If we found and replaced a placeholder, update all runs
                         if needs_update:
                             # Store the formatting from the first run
                             first_run_format = None
@@ -82,9 +89,13 @@ class DocumentHandler:
                                     'italic': first_run.italic
                                 }
 
-                            # Clear all existing runs while preserving paragraph properties
-                            for run in paragraph.runs:
-                                run._element.getparent().remove(run._element)
+                            # Store original paragraph alignment
+                            alignment = paragraph.alignment
+                            
+                            # Clear the paragraph completely
+                            p = paragraph._p
+                            while len(p):
+                                p.remove(p[0])
                             
                             # Add new run with replaced text
                             new_run = paragraph.add_run(working_text)
@@ -98,6 +109,9 @@ class DocumentHandler:
                             else:
                                 new_run.font.name = 'Arial'
                                 new_run.font.size = Pt(11)
+                                
+                            # Restore paragraph alignment
+                            paragraph.alignment = alignment
 
                 # Clean up unused placeholders
                 for idx in range(len(chunk) + 1, 5):
