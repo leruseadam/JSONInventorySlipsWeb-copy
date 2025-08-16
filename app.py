@@ -49,6 +49,9 @@ from docx.shared import Pt, Inches
 import configparser
 from werkzeug.utils import secure_filename
 
+# For document generation
+from src.utils.docgen import DocxGenerator
+
 # Local imports
 from src.utils.document_handler import DocumentHandler
 from src.ui.app import InventorySlipGenerator

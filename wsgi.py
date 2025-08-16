@@ -5,27 +5,60 @@ from logging.handlers import RotatingFileHandler
 import traceback
 
 # Configure paths for PythonAnywhere
-WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
-VENV_PATH = '/home/adamcordova/.virtualenvs/myapp/lib/python3.11/site-packages'
+WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'  # Explicit path to your app
+VENV_PATH = '/home/adamcordova/.virtualenvs/myapp'
+SITE_PACKAGES = os.path.join(VENV_PATH, 'lib/python3.11/site-packages')
 
-# Add the parent directory to path to find app.py
-PARENT_DIR = os.path.dirname(WEBAPP_PATH)
-SITE_PACKAGES = f'/home/adamcordova/.virtualenvs/myapp/lib/python3.11/site-packages'
+# Add the application directory to PYTHONPATH first
+if WEBAPP_PATH not in sys.path:
+    sys.path.insert(0, WEBAPP_PATH)
 
-# Ensure all necessary paths are in sys.path
-paths_to_add = [
-    WEBAPP_PATH,
-    PARENT_DIR,
-    SITE_PACKAGES,
-    VENV_PATH
-]
+# Ensure src directory is in the path for package imports
+SRC_PATH = os.path.join(WEBAPP_PATH, 'src')
+if os.path.exists(SRC_PATH) and SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
 
-for path in paths_to_add:
-    if path not in sys.path:
-        sys.path.insert(0, path)
+# Add virtualenv site-packages
+if os.path.exists(SITE_PACKAGES) and SITE_PACKAGES not in sys.path:
+    sys.path.append(SITE_PACKAGES)
+
+# Set up logging first
+logger = logging.getLogger('wsgi')
+logger.setLevel(logging.INFO)
 
 # Set PYTHONPATH environment variable
-os.environ['PYTHONPATH'] = ':'.join(paths_to_add)
+os.environ['PYTHONPATH'] = f"{WEBAPP_PATH}:{SRC_PATH}:{SITE_PACKAGES}"
+
+# Log the final sys.path configuration
+logger.info("Final Python path configuration:")
+for p in sys.path:
+    logger.info(f"  {p}")
+
+# Create any missing __init__.py files
+def ensure_init_files():
+    """Create any missing __init__.py files in the src directory structure"""
+    dirs_needing_init = [
+        os.path.join(WEBAPP_PATH, 'src'),
+        os.path.join(WEBAPP_PATH, 'src/utils'),
+        os.path.join(WEBAPP_PATH, 'src/base'),
+        os.path.join(WEBAPP_PATH, 'src/config'),
+        os.path.join(WEBAPP_PATH, 'src/data'),
+        os.path.join(WEBAPP_PATH, 'src/themes'),
+        os.path.join(WEBAPP_PATH, 'src/ui')
+    ]
+    
+    for dir_path in dirs_needing_init:
+        init_file = os.path.join(dir_path, '__init__.py')
+        try:
+            if os.path.exists(dir_path) and not os.path.exists(init_file):
+                with open(init_file, 'w') as f:
+                    f.write('"""Package initialization."""\n')
+                logger.info(f"Created missing __init__.py in {dir_path}")
+        except Exception as e:
+            logger.warning(f"Could not create __init__.py in {dir_path}: {e}")
+
+# Ensure all necessary __init__.py files exist
+ensure_init_files()
 
 # Create tmp directories for logs and uploads
 log_directory = '/tmp/jsoninventoryslips'
@@ -81,8 +114,25 @@ except Exception as e:
 UPLOAD_FOLDER = upload_directory
 
 try:
-    # Import the Flask application
-    from app import app as application
+    # Log the current sys.path for debugging
+    logger.info("Python path at startup:")
+    for p in sys.path:
+        logger.info(f"  {p}")
+    
+    # Change to the application directory before importing
+    os.chdir(WEBAPP_PATH)
+    logger.info(f"Changed working directory to: {os.getcwd()}")
+    
+    # Verify app.py exists
+    if not os.path.exists(os.path.join(WEBAPP_PATH, 'app.py')):
+        raise FileNotFoundError(f"app.py not found in {WEBAPP_PATH}")
+    
+    # Import the Flask application from the correct path
+    import app
+    application = app.app
+    
+    # Log successful import
+    logger.info("Successfully imported app")
     
     # Configure application
     application.config.update(
