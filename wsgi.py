@@ -8,7 +8,20 @@ import traceback
 username = os.getenv('USER', 'yourusername')  # Will be replaced during deployment
 WEBAPP_PATH = f'/home/{username}/JSONInventorySlipsWeb-copy'
 VENV_PATH = f'/home/{username}/.virtualenvs/myapp'
-SITE_PACKAGES = os.path.join(VENV_PATH, 'lib/python3.11/site-packages')
+
+# Use system Python packages as well
+SITE_PACKAGES = [
+    os.path.join(VENV_PATH, 'lib/python3.11/site-packages'),
+    '/usr/lib/python3.11',
+    '/usr/lib/python3.11/lib-dynload',
+    '/usr/local/lib/python3.11/dist-packages',
+    '/usr/lib/python3/dist-packages'
+]
+
+# Add all site-packages directories to sys.path
+for site_pkg in SITE_PACKAGES:
+    if os.path.exists(site_pkg) and site_pkg not in sys.path:
+        sys.path.append(site_pkg)
 
 # Create tmp directories with proper permissions
 TMP_BASE = '/tmp/jsoninventoryslips'
