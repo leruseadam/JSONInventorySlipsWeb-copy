@@ -8,6 +8,16 @@ import traceback
 WEBAPP_PATH = '/home/leruseadam/JSONInventorySlipsWeb-copy'
 VENV_PATH = '/home/leruseadam/.virtualenvs/inventoryapp/lib/python3.11/site-packages'
 
+# Create tmp directories for logs and uploads
+log_directory = '/tmp/jsoninventoryslips'
+upload_directory = '/tmp/inventory_generator/uploads'
+
+try:
+    os.makedirs(log_directory, exist_ok=True)
+    os.makedirs(upload_directory, exist_ok=True)
+except Exception as e:
+    print(f'Failed to create directories: {str(e)}')
+
 # Set up paths
 paths = [WEBAPP_PATH]
 if VENV_PATH not in sys.path:
@@ -17,18 +27,16 @@ for path in paths:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-# Configure logging with rotation (use /tmp for PythonAnywhere compatibility)
-log_directory = '/tmp/jsoninventoryslips'
+# Configure logging with rotation
+log_file = os.path.join(log_directory, 'app.log')
 try:
-    os.makedirs(log_directory, exist_ok=True)
-    log_file = os.path.join(log_directory, 'app.log')
     handler = RotatingFileHandler(log_file, maxBytes=100000, backupCount=3)
     handler.setLevel(logging.INFO)
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 except Exception as e:
-    print(f'Failed to set up logging: {str(e)}')
+    print(f'Failed to set up file logging: {str(e)}')
     # Fallback to stderr logging
     handler = logging.StreamHandler()
     handler.setLevel(logging.INFO)
@@ -50,9 +58,8 @@ try:
 except Exception as e:
     logger.error(f'Failed to configure SSL certificates: {str(e)}')
 
-# Ensure upload directory exists
-UPLOAD_FOLDER = os.path.join('/tmp', 'inventory_generator', 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Use the predefined upload directory
+UPLOAD_FOLDER = upload_directory
 
 try:
     # Import the Flask application
