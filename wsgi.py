@@ -5,10 +5,8 @@ from logging.handlers import RotatingFileHandler
 import traceback
 
 # Configure paths for PythonAnywhere
-import getpass
-USERNAME = getpass.getuser()
 WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
-VENV_PATH = f'/home/{USERNAME}/.virtualenvs/myapp/lib/python3.11/site-packages'
+VENV_PATH = '/home/adamcordova/.virtualenvs/myapp/lib/python3.11/site-packages'
 
 # Add the parent directory to path to find app.py
 PARENT_DIR = os.path.dirname(WEBAPP_PATH)
