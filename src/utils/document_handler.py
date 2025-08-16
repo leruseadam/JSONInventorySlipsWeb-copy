@@ -23,6 +23,10 @@ class DocumentHandler:
             return False
 
         try:
+            from docx.shared import Pt, Inches
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
             # Sort records by product type and then by product name
             sorted_records = sorted(records, 
                 key=lambda x: (
@@ -31,8 +35,16 @@ class DocumentHandler:
                 )
             )
             
+            # Calculate total pages
+            total_pages = (len(sorted_records) + 3) // 4  # Ceiling division by 4
+            current_page = 1
+            
             # Initialize context
-            context = {}
+            context = {
+                'current_page': current_page,
+                'total_pages': total_pages,
+                'page_number': f'Page {current_page} of {total_pages}'
+            }
             
             # Create context for the first 4 records (or fewer if less available)
             chunk = sorted_records[:4]
@@ -78,7 +90,17 @@ class DocumentHandler:
             
             # Render the template with the context
             self.doc.render(context, jinja_env)
-
+            
+            # Add page number to footer
+            section = self.doc.sections[0]
+            footer = section.footer
+            paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            page_number_text = paragraph.add_run(f'Page {current_page} of {total_pages}')
+            page_number_text.font.name = 'Arial'
+            page_number_text.font.size = Pt(10)
+            
             return True
 
         except Exception as e:
