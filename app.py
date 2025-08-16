@@ -2108,7 +2108,7 @@ if __name__ == '__main__':
                         # Try Chrome first with --new-window flag
                         chrome_path = ""
                         if sys.platform == "darwin":  # macOS
-                            chrome_path = 'open -a /Applications/Google\ Chrome.app %s'
+                            chrome_path = r'open -a /Applications/Google\ Chrome.app %s'
                         elif sys.platform == "win32":  # Windows
                             chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
                         
