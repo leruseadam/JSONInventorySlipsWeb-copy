@@ -84,11 +84,29 @@ class DocumentHandler:
             return False
 
     def save_document(self, filepath):
-        """Save document"""
+        """Save document with validation"""
         try:
+            # Save to temporary file first
+            temp_path = filepath + '.tmp'
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            self.doc.save(filepath)
-            return True
+            
+            # Save and validate
+            self.doc.save(temp_path)
+            
+            # Simple validation - try to open it
+            test_doc = Document(temp_path)
+            if test_doc.paragraphs or test_doc.tables:
+                # If valid, move to final location
+                os.replace(temp_path, filepath)
+                return True
+            else:
+                raise ValueError("Generated document appears to be empty")
+                
         except Exception as e:
             logger.error(f"Failed to save document: {str(e)}")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             return False
