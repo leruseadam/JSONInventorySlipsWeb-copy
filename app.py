@@ -1086,39 +1086,30 @@ def load_url():
             flash('Failed to load data from URL. Please check the file size, format, or try again later.')
             return redirect(url_for('index'))
 
-        # Clear any existing data first
+        # Clear any existing data
+        if 'df_path' in session:
+            remove_data(session['df_path'])
+        if 'raw_path' in session:
+            remove_data(session['raw_path'])
         session.clear()  # Clear all session data to prevent stale data issues
 
-        # Store new data in chunks with size validation
-        if len(result_df) > 200:  # Limit very large datasets
+        # Limit very large datasets
+        if len(result_df) > 200:
             logger.warning(f"Large dataset detected ({len(result_df)} rows). Limiting to first 200 rows.")
             result_df = result_df.head(200)
 
-        # Compress and store the data
         try:
-            json_data = result_df.to_json(orient='records', date_format='iso')
-            compressed = zlib.compress(json_data.encode('utf-8'), level=9)
-            encoded = base64.b64encode(compressed).decode('utf-8')
-            
-            # Split into smaller chunks
-            chunk_size = 500  # Smaller chunks for better handling
-            chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
-            
-            if len(chunks) > 20:
-                logger.error("Data too large even after compression")
-                flash('Data too large to process. Please try a smaller dataset.')
+            # Store DataFrame data
+            df_json = result_df.to_json(orient='records', date_format='iso')
+            df_path = store_data('df_json', df_json, session.id)
+            if not df_path:
+                logger.error("Failed to store DataFrame data")
+                flash('Error storing data. Please try again.')
                 return redirect(url_for('index'))
+            session['df_path'] = df_path
             
-            # Store chunks
-            session['df_json_chunks'] = len(chunks)
-            for i, chunk in enumerate(chunks):
-                session[f'df_json_chunk_{i}'] = chunk
-                
-            # Store format type
+            # Store format type (small enough for session)
             session['format_type'] = format_type
-            
-            # Log storage details
-            logger.info(f"Stored {len(chunks)} chunks, format_type={format_type}")
             
             # Store minimal raw data for debugging
             if raw_data:
@@ -1128,12 +1119,14 @@ def load_url():
                         'size': len(json.dumps(raw_data)),
                         'row_count': len(result_df)
                     }
-                    store_chunked_data('raw_json', minimal_data)
+                    raw_path = store_data('raw_json', minimal_data, session.id)
+                    if raw_path:
+                        session['raw_path'] = raw_path
                 except Exception as e:
                     logger.warning(f"Could not store raw data info: {e}")
             
-            # Force session save
-            session.modified = True
+            # Log storage details
+            logger.info(f"Data stored successfully, format_type={format_type}")
             
         except Exception as e:
             logger.error(f"Error compressing/storing data: {e}")
@@ -1157,11 +1150,25 @@ def handle_bamboo_url(url):
             flash('Could not process Bamboo data from URL', 'error')
             return redirect(url_for('index'))
         
-        store_chunked_data('df_json', result_df)
+        # Clear any existing data
+        if 'df_path' in session:
+            remove_data(session['df_path'])
+        if 'raw_path' in session:
+            remove_data(session['raw_path'])
+            
+        # Store DataFrame data
+        df_json = result_df.to_json(orient='records')
+        df_path = store_data('df_json', df_json, session.id)
+        if not df_path:
+            flash('Failed to store data', 'error')
+            return redirect(url_for('index'))
+        session['df_path'] = df_path
         
         # Store raw data for transfer info extraction
         if raw_data:
-            store_chunked_data('raw_json', json.dumps(raw_data))
+            raw_path = store_data('raw_json', raw_data, session.id)
+            if raw_path:
+                session['raw_path'] = raw_path
         
         session['format_type'] = format_type
         flash(f'{format_type} data loaded successfully', 'success')
