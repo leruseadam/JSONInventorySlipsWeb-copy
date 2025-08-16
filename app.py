@@ -1201,19 +1201,29 @@ def load_url():
         if not url:
             flash('Please enter a URL')
             return redirect(url_for('index'))
-            
+
+        logger.info(f"Attempting to load URL: {url}")
         result_df, format_type, raw_data = load_from_url(url)
-        
+
+        if result_df is None:
+            logger.error(f"load_from_url returned None for DataFrame. Possible network or format error.")
+            flash('Failed to load data from URL. Please check the file size, format, or try again later.')
+            return redirect(url_for('index'))
+
         # Clear any existing data first
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
-            
+
         # Store new data in chunks
         if not store_chunked_data('df_json', result_df):
-            raise Exception("Failed to store DataFrame")
+            logger.error("Failed to store DataFrame in chunked storage.")
+            flash('Failed to store loaded data.')
+            return redirect(url_for('index'))
+        logger.info(f"Successfully loaded and stored data from URL: {url}")
         return redirect(url_for('data_view'))
-        
+
     except Exception as e:
+        logger.error(f"Exception in /load-url: {str(e)}", exc_info=True)
         flash(f'Error loading data: {str(e)}')
         return redirect(url_for('index'))
     
