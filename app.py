@@ -1284,13 +1284,16 @@ def load_from_url(url):
     import certifi
     from urllib3.connection import HTTPConnection
 
-    # Configure global SSL context
+    # Configure global SSL context with enhanced security
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     ssl_context.verify_mode = ssl.CERT_REQUIRED
     ssl_context.check_hostname = True
+    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Disable older TLS versions
 
-    # Configure urllib3 to use the secure context by default
+    # Configure urllib3 to use the secure context by default and disable warnings
     urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
+    urllib3.util.ssl_.create_urllib3_context = lambda: ssl_context
     
     # Optionally import SOCKS support
     try:
@@ -1315,9 +1318,16 @@ def load_from_url(url):
         try:
             session = requests.Session()
             
+            # Create SSL context with strong security settings
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            ssl_context.check_hostname = True
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            
             class SSLAdapter(HTTPAdapter):
                 def init_poolmanager(self, *args, **kwargs):
                     kwargs['ssl_context'] = ssl_context
+                    kwargs['assert_hostname'] = True
                     return super().init_poolmanager(*args, **kwargs)
 
             # Use our custom adapter with proper SSL context
@@ -1356,12 +1366,20 @@ def load_from_url(url):
             return None
             
         try:
+            # Create a secure SSL context for SOCKS proxy
+            proxy_ssl_context = ssl.create_default_context(cafile=certifi.where())
+            proxy_ssl_context.verify_mode = ssl.CERT_REQUIRED
+            proxy_ssl_context.check_hostname = True
+            proxy_ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            proxy_ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
+            
             proxy = SOCKSProxyManager(
                 'socks5h://proxy.pythonanywhere.com:3128',
                 username=None,
                 password=None,
                 timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                ssl_context=ssl_context,
+                ssl_context=proxy_ssl_context,
+                cert_reqs='CERT_REQUIRED',
                 ca_certs=certifi.where()
             )
             response = proxy.request('GET', url)
