@@ -5,8 +5,15 @@ from logging.handlers import RotatingFileHandler
 import traceback
 
 # Configure paths for PythonAnywhere
+import getpass
+USERNAME = getpass.getuser()
 WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
-VENV_PATH = '/home/leruseadam/.virtualenvs/myapp/lib/python3.11/site-packages'  # PythonAnywhere venv path
+VENV_PATH = f'/home/{USERNAME}/.virtualenvs/myapp/lib/python3.11/site-packages'
+
+# Add the parent directory to path to find app.py
+PARENT_DIR = os.path.dirname(WEBAPP_PATH)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
 
 # Create tmp directories for logs and uploads
 log_directory = '/tmp/jsoninventoryslips'
