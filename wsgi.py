@@ -5,9 +5,24 @@ from logging.handlers import RotatingFileHandler
 import traceback
 
 # Configure paths for PythonAnywhere
-WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'  # Explicit path to your app
-VENV_PATH = '/home/adamcordova/.virtualenvs/myapp'
+username = os.getenv('USER', 'yourusername')  # Will be replaced during deployment
+WEBAPP_PATH = f'/home/{username}/JSONInventorySlipsWeb-copy'
+VENV_PATH = f'/home/{username}/.virtualenvs/myapp'
 SITE_PACKAGES = os.path.join(VENV_PATH, 'lib/python3.11/site-packages')
+
+# Create tmp directories with proper permissions
+TMP_BASE = '/tmp/jsoninventoryslips'
+UPLOAD_FOLDER = '/tmp/inventory_generator/uploads'
+SESSION_DIR = '/tmp/flask_session'
+DATA_DIR = '/tmp/inventory_slips_data'
+
+for directory in [TMP_BASE, UPLOAD_FOLDER, SESSION_DIR, DATA_DIR]:
+    try:
+        os.makedirs(directory, exist_ok=True)
+        # Ensure directory is readable and writable by the web app
+        os.chmod(directory, 0o755)
+    except Exception as e:
+        print(f'Failed to create/configure directory {directory}: {str(e)}')
 
 # Add the application directory to PYTHONPATH first
 if WEBAPP_PATH not in sys.path:
