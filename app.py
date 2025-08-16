@@ -51,7 +51,8 @@ try:
         jsonify, 
         session, 
         send_file, 
-        send_from_directory
+        send_from_directory,
+        make_response
     )
     import requests
     import pandas as pd
@@ -1389,9 +1390,16 @@ def data_view():
         flash('Error loading data. Please try again.')
         return redirect(url_for('index'))
 
-@app.route('/generate-slips', methods=['POST'])
+@app.route('/generate-slips', methods=['POST', 'OPTIONS'])
 def generate_slips():
     """Generate inventory slips using simple document generation"""
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = make_response()
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        return response
     try:
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
@@ -1491,13 +1499,20 @@ def generate_slips():
                 flash('Generated document appears to be corrupted. Please try again.')
                 return redirect(url_for('data_view'))
             
-            # Return the file for download
-            return send_file(
+            # Return the file for download with CORS headers
+            response = send_file(
                 result,
                 as_attachment=True,
                 download_name=os.path.basename(result),
                 mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
             )
+            
+            # Add CORS headers
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+            
+            return response
         else:
             logger.error(f"Document generation failed: {result}")
             flash(f'Failed to generate inventory slips: {result}')
