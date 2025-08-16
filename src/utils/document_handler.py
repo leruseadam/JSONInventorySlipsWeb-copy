@@ -50,38 +50,34 @@ class DocumentHandler:
                         vendor = vendor.split(' - ')[1]
                     
                     replacements = {
-                        'PRODUCT_NAME': product_name[:100],  # Limit length
-                        'BARCODE': record.get('Barcode*', '')[:50],
-                        'DATE': record.get('Accepted Date', ''),
-                        'VENDOR': vendor[:50],
-                        'QUANTITY': str(record.get('Quantity Received*', ''))[:20],
-                        'STRAIN': record.get('Strain Name', '')[:50]
+                        f'{{{{Label{idx}.ProductName}}}}': product_name[:100],  # Limit length
+                        f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode*', '')[:50],
+                        f'{{{{Label{idx}.AcceptedDate}}}}': record.get('Accepted Date', ''),
+                        f'{{{{Label{idx}.Vendor}}}}': vendor[:50]
                     }
                     
                     # Apply replacements in all paragraphs and tables
                     for paragraph in all_paragraphs:
                         for run in paragraph.runs:
                             text = run.text
-                            for placeholder, new_value in replacements.items():
-                                placeholder = '{{' + placeholder + '}}'
-                                if placeholder in text:
-                                    text = text.replace(placeholder, str(new_value))
+                            for old_text, new_text in replacements.items():
+                                if old_text in text:
+                                    text = text.replace(old_text, str(new_text))
                                     run.text = text
-                                    run.font.name = 'Cambria'  # Use template font
-                                    if 'PRODUCT_NAME' in placeholder:
+                                    run.font.name = 'Arial'  # Use Arial font
+                                    if '.ProductName' in old_text:
                                         run.font.size = Pt(11)  # Larger font for product name
                                     else:
                                         run.font.size = Pt(10)  # Standard font size
 
-                # Clean up any remaining placeholders
-                empty_replacements = {
-                    '{{PRODUCT_NAME}}': '',
-                    '{{BARCODE}}': '',
-                    '{{DATE}}': '',
-                    '{{VENDOR}}': '',
-                    '{{QUANTITY}}': '',
-                    '{{STRAIN}}': ''
-                }
+                # Clean up any remaining placeholders in unused slots
+                for unused_idx in range(len(chunk) + 1, 5):
+                    empty_replacements = {
+                        f'{{{{Label{unused_idx}.ProductName}}}}': '',
+                        f'{{{{Label{unused_idx}.Barcode}}}}': '',
+                        f'{{{{Label{unused_idx}.AcceptedDate}}}}': '',
+                        f'{{{{Label{unused_idx}.Vendor}}}}': ''
+                    }
                 
                 for paragraph in all_paragraphs:
                     for run in paragraph.runs:
