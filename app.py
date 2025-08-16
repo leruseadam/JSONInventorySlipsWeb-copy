@@ -317,6 +317,8 @@ def add_security_headers(response):
     return response
 
 # Import session storage utilities
+import uuid
+from flask_session import Session
 from src.utils.session_storage import store_data, get_data, cleanup_old_files, remove_data
 
 # Configure session for Chrome compatibility and uWSGI
@@ -327,11 +329,25 @@ app.config.update(
     SESSION_COOKIE_PATH='/',
     PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
     SESSION_REFRESH_EACH_REQUEST=True,
-    SESSION_TYPE='filesystem'  # Use filesystem instead of signed cookies
+    SESSION_TYPE='filesystem',  # Use filesystem instead of signed cookies
+    SESSION_FILE_DIR=os.path.join(tempfile.gettempdir(), 'flask_session'),
+    SESSION_FILE_THRESHOLD=500  # Maximum number of session files
 )
+
+# Ensure session directory exists
+os.makedirs(app.config['SESSION_FILE_DIR'], exist_ok=True)
+
+# Initialize Flask-Session
+Session(app)
 
 # Clean up old temporary files on startup
 cleanup_old_files()
+
+# Initialize session ID if needed
+@app.before_request
+def init_session():
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
@@ -1086,12 +1102,19 @@ def load_url():
             flash('Failed to load data from URL. Please check the file size, format, or try again later.')
             return redirect(url_for('index'))
 
+        # Initialize session if needed
+        if 'session_id' not in session:
+            session['session_id'] = str(uuid.uuid4())
+            
         # Clear any existing data
         if 'df_path' in session:
             remove_data(session['df_path'])
         if 'raw_path' in session:
             remove_data(session['raw_path'])
-        session.clear()  # Clear all session data to prevent stale data issues
+            
+        # Don't clear entire session, just data paths
+        session.pop('df_path', None)
+        session.pop('raw_path', None)
 
         # Limit very large datasets
         if len(result_df) > 200:
@@ -1099,14 +1122,15 @@ def load_url():
             result_df = result_df.head(200)
 
         try:
-            # Store DataFrame data
+            # Store DataFrame data with session ID
             df_json = result_df.to_json(orient='records', date_format='iso')
-            df_path = store_data('df_json', df_json, session.id)
+            df_path = store_data('df_json', df_json, session['session_id'])
             if not df_path:
                 logger.error("Failed to store DataFrame data")
                 flash('Error storing data. Please try again.')
                 return redirect(url_for('index'))
             session['df_path'] = df_path
+            logger.info(f"DataFrame stored at {df_path}")
             
             # Store format type (small enough for session)
             session['format_type'] = format_type
@@ -1584,6 +1608,12 @@ def data_view():
     try:
         # Log session state for debugging
         logger.info(f"Session keys at start of data_view: {list(session.keys())}")
+        logger.info(f"Session ID: {session.get('session_id')}")
+        
+        # Ensure session is initialized
+        if 'session_id' not in session:
+            session['session_id'] = str(uuid.uuid4())
+            logger.info(f"New session ID created: {session['session_id']}")
         
         # Get data file paths from session
         df_path = session.get('df_path')
@@ -1592,6 +1622,12 @@ def data_view():
         if not df_path:
             logger.error("No data path found in session")
             flash('No data available. Please load data first.')
+            return redirect(url_for('index'))
+            
+        # Verify the file exists
+        if not os.path.exists(df_path):
+            logger.error(f"Data file not found at path: {df_path}")
+            flash('Data file not found. Please reload your data.')
             return redirect(url_for('index'))
             
         # Retrieve data from temporary storage
