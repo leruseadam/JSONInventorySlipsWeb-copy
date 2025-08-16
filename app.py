@@ -61,42 +61,79 @@ MAX_CHUNK_SIZE = 500  # Reduced from 800 to be safer
 MAX_TOTAL_SIZE = 3000  # Maximum total size after compression
 COMPRESSION_LEVEL = 9  # Maximum compression
 
-def compress_session_data(data):
-    """Compress data with improved compression and size checks"""
+def compress_session_data(data, max_size=MAX_TOTAL_SIZE):
+    """Compress data with improved compression, size checks, and memory efficiency"""
     try:
-        # Convert DataFrame to minimal JSON if needed
+        # Start with basic validation
+        if data is None:
+            raise ValueError("Cannot compress None data")
+            
+        # Convert DataFrame efficiently
         if isinstance(data, pd.DataFrame):
-            data = data.to_json(orient='records', date_format='iso')
+            # Only keep essential columns and limit precision for floats
+            essential_cols = ['Product Name*', 'Product Type*', 'Quantity Received*', 
+                            'Barcode*', 'Accepted Date', 'Vendor', 'Strain Name']
+            data = data[data.columns.intersection(essential_cols)]
+            
+            # Convert to JSON with minimal settings
+            data = data.to_json(orient='records', 
+                              date_format='iso',
+                              double_precision=2,
+                              default_handler=str)
         elif not isinstance(data, str):
-            data = json.dumps(data, separators=(',', ':'))
+            # For dictionaries and other objects, use minimal JSON encoding
+            data = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
 
-        # First level compression
+        # Initial compression
         compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
         
-        # If still too large, reduce data
-        if len(compressed) > MAX_TOTAL_SIZE:
-            if isinstance(data, str):
-                try:
-                    # Parse JSON to reduce content
-                    parsed = json.loads(data)
+        # If too large, apply progressive reduction
+        if len(compressed) > max_size:
+            try:
+                parsed = json.loads(data)
+                if isinstance(parsed, list):
+                    # Keep essential data, limit records and field lengths
+                    reduced = []
+                    for item in parsed[:50]:  # Increased from 25 to 50
+                        reduced_item = {}
+                        for k, v in item.items():
+                            # Only keep non-empty values
+                            if v and str(v).strip():
+                                # Truncate based on field type
+                                if k in ['Product Name*', 'Vendor']:
+                                    reduced_item[k] = str(v)[:100]
+                                elif k in ['Barcode*', 'Strain Name']:
+                                    reduced_item[k] = str(v)[:50]
+                                else:
+                                    reduced_item[k] = str(v)[:30]
+                        reduced.append(reduced_item)
+                    data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
+                else:
+                    # For single objects, limit field lengths
+                    reduced = {k: str(v)[:50] for k, v in parsed.items()}
+                    data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
+                    
+                # Try compression again
+                compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+                
+                # If still too large, apply more aggressive reduction
+                if len(compressed) > max_size:
+                    logger.warning("Data still too large after reduction, applying aggressive truncation")
                     if isinstance(parsed, list):
-                        # Keep only essential fields and limit records
-                        reduced = []
-                        for item in parsed[:25]:  # Limit to 25 records
-                            reduced_item = {k: str(v)[:50] for k, v in item.items()}  # Truncate values
-                            reduced.append(reduced_item)
-                        data = json.dumps(reduced, separators=(',', ':'))
-                    elif isinstance(parsed, dict):
-                        # Reduce dictionary size
-                        data = json.dumps({k: str(v)[:50] for k, v in parsed.items()})
-                except:
-                    # If JSON parsing fails, truncate string
-                    data = data[:1000] + "...[truncated]"
-            
-            # Compress reduced data
-            compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+                        reduced = reduced[:25]  # Further reduce to 25 records
+                        data = json.dumps(reduced, separators=(',', ':'), ensure_ascii=False)
+                        compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
+                        
+            except json.JSONDecodeError:
+                # If JSON parsing fails, truncate string with warning
+                logger.warning("JSON parsing failed during compression, truncating data")
+                data = data[:1000] + "...[truncated]"
+                compressed = zlib.compress(data.encode('utf-8'), level=COMPRESSION_LEVEL)
 
-        return base64.b64encode(compressed).decode('utf-8')
+        encoded = base64.b64encode(compressed).decode('utf-8')
+        logger.info(f"Compressed data size: {len(encoded)} bytes")
+        return encoded
+        
     except Exception as e:
         logger.error(f"Compression error: {str(e)}")
         raise
@@ -1214,31 +1251,58 @@ def load_url():
             return redirect(url_for('index'))
 
         # Clear any existing data first
-        for key in ['df_json', 'raw_json']:
-            clear_chunked_data(key)
+        session.clear()  # Clear all session data to prevent stale data issues
 
-        # Store new data in chunks
-        success = store_chunked_data('df_json', result_df)
-        if not success:
-            logger.error("Failed to store DataFrame in chunked storage.")
-            flash('Failed to store loaded data.')
+        # Store new data in chunks with size validation
+        if len(result_df) > 200:  # Limit very large datasets
+            logger.warning(f"Large dataset detected ({len(result_df)} rows). Limiting to first 200 rows.")
+            result_df = result_df.head(200)
+
+        # Compress and store the data
+        try:
+            json_data = result_df.to_json(orient='records', date_format='iso')
+            compressed = zlib.compress(json_data.encode('utf-8'), level=9)
+            encoded = base64.b64encode(compressed).decode('utf-8')
+            
+            # Split into smaller chunks
+            chunk_size = 500  # Smaller chunks for better handling
+            chunks = [encoded[i:i + chunk_size] for i in range(0, len(encoded), chunk_size)]
+            
+            if len(chunks) > 20:
+                logger.error("Data too large even after compression")
+                flash('Data too large to process. Please try a smaller dataset.')
+                return redirect(url_for('index'))
+            
+            # Store chunks
+            session['df_json_chunks'] = len(chunks)
+            for i, chunk in enumerate(chunks):
+                session[f'df_json_chunk_{i}'] = chunk
+                
+            # Store format type
+            session['format_type'] = format_type
+            
+            # Log storage details
+            logger.info(f"Stored {len(chunks)} chunks, format_type={format_type}")
+            
+            # Store minimal raw data for debugging
+            if raw_data:
+                try:
+                    minimal_data = {
+                        'type': format_type,
+                        'size': len(json.dumps(raw_data)),
+                        'row_count': len(result_df)
+                    }
+                    store_chunked_data('raw_json', minimal_data)
+                except Exception as e:
+                    logger.warning(f"Could not store raw data info: {e}")
+            
+            # Force session save
+            session.modified = True
+            
+        except Exception as e:
+            logger.error(f"Error compressing/storing data: {e}")
+            flash('Error storing data. Please try again.')
             return redirect(url_for('index'))
-
-        # Store format type in session
-        session['format_type'] = format_type
-
-        # Log session data for debugging
-        logger.info(f"Session data after storing: format_type={session.get('format_type')}")
-        logger.info(f"Chunks stored: {session.get('df_json_chunks')}")
-        
-        # Store raw data if it's not too large
-        if raw_data:
-            try:
-                raw_json = json.dumps(raw_data)
-                if len(raw_json) < 2000:
-                    store_chunked_data('raw_json', raw_json)
-            except Exception as e:
-                logger.warning(f"Could not store raw data: {e}")
 
         logger.info(f"Successfully loaded and stored data from URL: {url}")
         response = redirect(url_for('data_view'))
@@ -1284,16 +1348,13 @@ def load_from_url(url):
     import certifi
     from urllib3.connection import HTTPConnection
 
-    # Configure global SSL context with enhanced security
+    # Configure global SSL context
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     ssl_context.verify_mode = ssl.CERT_REQUIRED
     ssl_context.check_hostname = True
-    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-    ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Disable older TLS versions
 
-    # Configure urllib3 to use the secure context by default and disable warnings
+    # Configure urllib3 to use the secure context by default
     urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
-    urllib3.util.ssl_.create_urllib3_context = lambda: ssl_context
     
     # Optionally import SOCKS support
     try:
@@ -1318,16 +1379,9 @@ def load_from_url(url):
         try:
             session = requests.Session()
             
-            # Create SSL context with strong security settings
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-            ssl_context.check_hostname = True
-            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            
             class SSLAdapter(HTTPAdapter):
                 def init_poolmanager(self, *args, **kwargs):
                     kwargs['ssl_context'] = ssl_context
-                    kwargs['assert_hostname'] = True
                     return super().init_poolmanager(*args, **kwargs)
 
             # Use our custom adapter with proper SSL context
@@ -1366,20 +1420,12 @@ def load_from_url(url):
             return None
             
         try:
-            # Create a secure SSL context for SOCKS proxy
-            proxy_ssl_context = ssl.create_default_context(cafile=certifi.where())
-            proxy_ssl_context.verify_mode = ssl.CERT_REQUIRED
-            proxy_ssl_context.check_hostname = True
-            proxy_ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            proxy_ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
-            
             proxy = SOCKSProxyManager(
                 'socks5h://proxy.pythonanywhere.com:3128',
                 username=None,
                 password=None,
                 timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                ssl_context=proxy_ssl_context,
-                cert_reqs='CERT_REQUIRED',
+                ssl_context=ssl_context,
                 ca_certs=certifi.where()
             )
             response = proxy.request('GET', url)
@@ -1664,9 +1710,17 @@ def data_view():
         logger.info(f"Session format_type: {session.get('format_type')}")
         logger.info(f"Session df_json_chunks: {session.get('df_json_chunks')}")
 
-        # Get chunked data from session
+        # Clear any stale session data
+        if 'df_json' in session:
+            session.pop('df_json', None)
+
+        # Get chunked data from session with a timeout
+        start_time = time.time()
         df_json = get_chunked_data('df_json')
         format_type = session.get('format_type')
+        
+        # Log time taken to retrieve data
+        logger.info(f"Time taken to retrieve chunked data: {time.time() - start_time:.2f} seconds")
 
         if df_json is None:
             logger.error("No data found in session")
