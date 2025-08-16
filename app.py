@@ -1397,20 +1397,23 @@ def load_from_url(url):
             
         except requests.exceptions.SSLError as e:
             logger.error(f"SSL verification failed: {str(e)}")
-            raise  # Always fail on SSL errors
+            # Always fail on SSL errors in production
+            if os.environ.get('FLASK_ENV') != 'development':
+                raise
+            
+            # Only attempt unverified connection in development
+            logger.warning("Development environment detected - attempting unverified connection")
+            try:
+                session = requests.Session()
+                response = session.get(url, timeout=timeout, verify=False)
+                response.raise_for_status()
+                return response
+            except Exception as fallback_e:
+                logger.error(f"Unverified connection also failed: {str(fallback_e)}")
+                return None
+                
         except Exception as e:
             logger.error(f"Direct connection failed: {str(e)}")
-            return None
-        except requests.exceptions.SSLError as e:
-            logger.warning(f"SSL verification failed: {str(e)}")
-            # Fall back to unverified only in development
-            if os.environ.get('FLASK_ENV') == 'development':
-                logger.warning("Development environment detected - attempting unverified connection")
-                response = session.get(url, timeout=timeout, verify=False)
-                return response
-            return None
-        except Exception as e:
-            logger.warning(f"Direct connection failed: {str(e)}")
             return None
             
     def try_socks_connection(url, timeout=60):
@@ -1465,14 +1468,18 @@ def load_from_url(url):
     # 2. Try HTTP proxy with SSL verification
     logger.info("Trying HTTP proxy with SSL verification...")
     session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    session.mount('https://', HTTPAdapter(max_retries=retries))
     
-    import certifi
+    # More aggressive retry strategy
+    retries = Retry(
+        total=5,  # Increased total retries
+        backoff_factor=1,  # Increased backoff
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD", "OPTIONS"],  # Explicitly allow methods
+        raise_on_status=True,
+        respect_retry_after_header=True
+    )
+    
+    # Configure proxy settings
     proxies = {
         'http': 'http://proxy.pythonanywhere.com:3128',
         'https': 'http://proxy.pythonanywhere.com:3128',
@@ -1483,18 +1490,38 @@ def load_from_url(url):
         def init_poolmanager(self, *args, **kwargs):
             kwargs['ssl_context'] = ssl_context
             return super().init_poolmanager(*args, **kwargs)
+        
+        def proxy_manager_for(self, *args, **kwargs):
+            kwargs['ssl_context'] = ssl_context
+            return super().proxy_manager_for(*args, **kwargs)
     
-    # Use our custom adapter
-    adapter = SSLAdapter(max_retries=retries)
+    # Use our custom adapter with higher pool maxsize
+    adapter = SSLAdapter(
+        max_retries=retries,
+        pool_connections=10,  # Increased from default
+        pool_maxsize=10,     # Increased from default
+        pool_block=True      # Block when pool is full
+    )
+    
     session.mount('https://', adapter)
     session.verify = certifi.where()
     
     try:
-        response = session.get(url, 
-                             timeout=60,
-                             proxies=proxies,
-                             verify=True,  # Always verify SSL
-                             stream=True)
+        # Use more granular timeout settings
+        response = session.get(
+            url,
+            timeout=(30, 300),  # (connect timeout, read timeout)
+            proxies=proxies,
+            verify=True,      # Always verify SSL
+            stream=True,      # Use streaming
+            allow_redirects=True,
+            headers={
+                'User-Agent': 'InventorySlipsBot/1.0',
+                'Accept': '*/*',
+                'Connection': 'keep-alive'
+            }
+        )
+        
         if response.status_code == 200:
             logger.info("HTTP proxy connection successful")
             return process_response(response)
