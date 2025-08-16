@@ -1260,10 +1260,16 @@ def load_from_url(url):
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
+    # Add proxy support for PythonAnywhere
+    # See: https://help.pythonanywhere.com/pages/OutboundHttpRequests/
+    proxies = {
+        'http': 'http://proxy.pythonanywhere.com:3128',
+        'https': 'http://proxy.pythonanywhere.com:3128',
+    }
     try:
         # Increase timeout for large files
         # For debugging, set verify=False to disable SSL verification
-        response = session.get(url, timeout=240, headers=headers, verify=False)
+        response = session.get(url, timeout=240, headers=headers, verify=False, proxies=proxies)
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
