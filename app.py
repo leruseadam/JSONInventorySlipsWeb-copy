@@ -1316,9 +1316,6 @@ def load_from_url(url):
 # Update data view to handle chunked data properly
 @app.route('/data-view')
 def data_view():
-        # Debug: log first 3 rows of DataFrame after loading
-        if not df.empty:
-            logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
     try:
         # Get chunked data from session
         df_json = get_chunked_data('df_json')
@@ -1334,6 +1331,9 @@ def data_view():
             else:
                 from io import StringIO
                 df = pd.read_json(StringIO(df_json), orient='records')
+            # Debug: log first 3 rows of DataFrame after loading
+            if not df.empty:
+                logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
             # Debug: log vendor field from first row
             if not df.empty:
                 logger.info(f"First row vendor: {df.iloc[0].get('Vendor', 'Unknown')}")
