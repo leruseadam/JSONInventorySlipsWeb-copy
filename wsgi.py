@@ -10,8 +10,22 @@ VENV_PATH = '/home/adamcordova/.virtualenvs/myapp/lib/python3.11/site-packages'
 
 # Add the parent directory to path to find app.py
 PARENT_DIR = os.path.dirname(WEBAPP_PATH)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
+SITE_PACKAGES = f'/home/adamcordova/.virtualenvs/myapp/lib/python3.11/site-packages'
+
+# Ensure all necessary paths are in sys.path
+paths_to_add = [
+    WEBAPP_PATH,
+    PARENT_DIR,
+    SITE_PACKAGES,
+    VENV_PATH
+]
+
+for path in paths_to_add:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+# Set PYTHONPATH environment variable
+os.environ['PYTHONPATH'] = ':'.join(paths_to_add)
 
 # Create tmp directories for logs and uploads
 log_directory = '/tmp/jsoninventoryslips'
