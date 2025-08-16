@@ -21,34 +21,51 @@ import uuid
 import re
 import webbrowser
 import time
+import traceback
 from functools import wraps
-from io import BytesIO
+from io import BytesIO, StringIO
 import zlib
 from pathlib import Path
 from datetime import datetime
 
-# Third-party imports
-from flask import (
-    Flask, 
-    render_template, 
-    request, 
-    redirect, 
-    url_for, 
-    flash, 
-    jsonify, 
-    session, 
-    send_file, 
-    send_from_directory
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log')
+    ]
 )
-import requests
-import pandas as pd
-from docxtpl import DocxTemplate
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.section import WD_ORIENT
-from docx.shared import Pt, Inches
-from docxcompose.composer import Composer
-import configparser
+logger = logging.getLogger('app')
+
+# Third-party imports
+try:
+    from flask import (
+        Flask, 
+        render_template, 
+        request, 
+        redirect, 
+        url_for, 
+        flash, 
+        jsonify, 
+        session, 
+        send_file, 
+        send_from_directory
+    )
+    import requests
+    import pandas as pd
+    from docxtpl import DocxTemplate
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.section import WD_ORIENT
+    from docx.shared import Pt, Inches
+    from docxcompose.composer import Composer
+    import configparser
+    logger.info("Successfully imported all required packages")
+except ImportError as e:
+    logger.error(f"Failed to import required package: {str(e)}\n{traceback.format_exc()}")
+    raise
 from werkzeug.utils import secure_filename
 
 # Local imports
