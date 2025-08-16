@@ -1258,7 +1258,111 @@ def load_from_url(url):
     from urllib3.util.retry import Retry
     import urllib3
     import socket
+    import socks
+    from urllib3.contrib.socks import SOCKSProxyManager
     from urllib3.connection import HTTPConnection
+    
+    def try_direct_connection(url, timeout=60):
+        """Try to connect directly without proxy"""
+        try:
+            session = requests.Session()
+            response = session.get(url, timeout=timeout, verify=False)
+            return response
+        except:
+            return None
+            
+    def try_socks_connection(url, timeout=60):
+        """Try to connect using SOCKS proxy"""
+        try:
+            proxy = urllib3.SOCKSProxyManager(
+                'socks5h://proxy.pythonanywhere.com:3128',
+                username=None,
+                password=None,
+                timeout=urllib3.Timeout(connect=timeout, read=timeout)
+            )
+            response = proxy.request('GET', url)
+            return response
+        except:
+            return None
+            
+    # Try different connection methods in order
+    logger.info("Attempting to load URL with multiple methods...")
+    
+    # 1. Try direct connection first
+    logger.info("Trying direct connection...")
+    response = try_direct_connection(url)
+    if response and response.status_code == 200:
+        logger.info("Direct connection successful")
+        return process_response(response)
+        
+    # 2. Try HTTP proxy
+    logger.info("Trying HTTP proxy...")
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504]
+    )
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    proxies = {
+        'http': 'http://proxy.pythonanywhere.com:3128',
+        'https': 'http://proxy.pythonanywhere.com:3128',
+    }
+    
+    try:
+        response = session.get(url, 
+                             timeout=60,
+                             proxies=proxies,
+                             verify=False,
+                             stream=True)
+        if response.status_code == 200:
+            logger.info("HTTP proxy connection successful")
+            return process_response(response)
+    except Exception as e:
+        logger.warning(f"HTTP proxy failed: {str(e)}")
+    
+    # 3. Try SOCKS proxy
+    logger.info("Trying SOCKS proxy...")
+    response = try_socks_connection(url)
+    if response and response.status_code == 200:
+        logger.info("SOCKS proxy connection successful")
+        return process_response(response)
+    
+    # If all methods fail, raise error
+    raise ValueError("All connection methods failed")
+
+def process_response(response):
+    """Process the response from any connection method"""
+    try:
+        content_type = response.headers.get('Content-Type', '').lower()
+        
+        if 'application/json' in content_type or str(response.url).lower().endswith('.json'):
+            data = response.json()
+            df, format_type = parse_inventory_json(data)
+            return df, format_type, data
+            
+        elif 'text/csv' in content_type or str(response.url).lower().endswith('.csv'):
+            df = pd.read_csv(BytesIO(response.content))
+            df, msg = process_csv_data(df)
+            return df, 'CSV', None
+            
+        else:
+            # Try to parse as JSON first, then CSV
+            try:
+                data = response.json()
+                df, format_type = parse_inventory_json(data)
+                return df, format_type, data
+            except Exception as e_json:
+                try:
+                    df = pd.read_csv(BytesIO(response.content))
+                    df, msg = process_csv_data(df)
+                    return df, 'CSV', None
+                except Exception as e_csv:
+                    raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
+    except Exception as e:
+        logger.error(f"Error processing response: {str(e)}")
+        raise
     
     # Create a custom connection class with longer timeouts
     class CustomHTTPConnection(HTTPConnection):
