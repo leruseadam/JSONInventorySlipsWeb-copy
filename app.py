@@ -1262,11 +1262,14 @@ def load_from_url(url):
     session.mount('https://', HTTPAdapter(max_retries=retries))
     try:
         # Increase timeout for large files
-        response = session.get(url, timeout=240, headers=headers, verify=True)
+        # For debugging, set verify=False to disable SSL verification
+        response = session.get(url, timeout=240, headers=headers, verify=False)
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
             logger.error(f"HTTP error {response.status_code}: {response.text}")
+            logger.error(f"Response headers: {response.headers}")
+            logger.error(f"Exception details: {str(e)}")
             return None, None, None  # Prevent 502 by returning gracefully
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
@@ -1306,6 +1309,10 @@ def load_from_url(url):
                     raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error loading URL: {url}\n{traceback.format_exc()}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Network error response: {e.response.text}")
+            logger.error(f"Network error headers: {e.response.headers}")
+        logger.error(f"Exception details: {str(e)}")
         raise ValueError(f"Network error loading URL: {e}")
     except Exception as e:
         logger.error(f"General error loading data from URL: {url}\n{traceback.format_exc()}")
