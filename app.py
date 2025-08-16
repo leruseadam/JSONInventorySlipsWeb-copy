@@ -1259,36 +1259,49 @@ def load_from_url(url):
     import urllib3
     import socket
     import socks
+    import ssl
+    import certifi
     from urllib3.contrib.socks import SOCKSProxyManager
     from urllib3.connection import HTTPConnection
+    
+    # Configure urllib3 to use system certificates plus certifi
+    try:
+        default_context = ssl.create_default_context(cafile=certifi.where())
+        # Enforce certificate verification
+        default_context.verify_mode = ssl.CERT_REQUIRED
+        # Enable hostname verification
+        default_context.check_hostname = True
+        urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
+        urllib3.util.ssl_.SSL_CONTEXT_FACTORY = lambda: default_context
+    except Exception as e:
+        logger.error(f"Error configuring SSL context: {e}")
+        raise
     
     def try_direct_connection(url, timeout=60):
         """Try to connect directly without proxy"""
         try:
             session = requests.Session()
             
-            # Get system SSL certificates first
-            import ssl
-            import certifi
-            
-            # Try to create a default SSL context with system certs
-            try:
-                context = ssl.create_default_context()
-                # Add certifi certs as a fallback
-                context.load_verify_locations(certifi.where())
-            except Exception as ssl_e:
-                logger.warning(f"Could not create SSL context with system certs: {ssl_e}")
-                # Fall back to just certifi certs
-                context = ssl.create_default_context(cafile=certifi.where())
-            
-            # Configure session to use our SSL context
-            session.verify = certifi.where()
-            adapter = requests.adapters.HTTPAdapter()
-            adapter.poolmanager.connection_pool_kw['ssl_context'] = context
+            # Use the pre-configured SSL context
+            adapter = HTTPAdapter(max_retries=3)
+            adapter.poolmanager.connection_pool_kw['ssl_context'] = default_context
             session.mount('https://', adapter)
             
+            # Always verify SSL
+            session.verify = certifi.where()
             response = session.get(url, timeout=timeout)
+            
+            # Verify the response
+            if not response.ok:
+                raise requests.exceptions.RequestException(f"Bad response: {response.status_code}")
+                
             return response
+        except requests.exceptions.SSLError as e:
+            logger.error(f"SSL verification failed: {str(e)}")
+            raise  # Always fail on SSL errors
+        except Exception as e:
+            logger.error(f"Direct connection failed: {str(e)}")
+            return None
         except requests.exceptions.SSLError as e:
             logger.warning(f"SSL verification failed: {str(e)}")
             # Fall back to unverified only in development
@@ -1304,23 +1317,13 @@ def load_from_url(url):
     def try_socks_connection(url, timeout=60):
         """Try to connect using SOCKS proxy"""
         try:
-            import certifi
-            import ssl
-            
-            # Create SSL context with both system and certifi certificates
-            try:
-                context = ssl.create_default_context()
-                context.load_verify_locations(certifi.where())
-            except Exception as ssl_e:
-                logger.warning(f"Could not create SSL context with system certs: {ssl_e}")
-                context = ssl.create_default_context(cafile=certifi.where())
-            
             proxy = urllib3.SOCKSProxyManager(
                 'socks5h://proxy.pythonanywhere.com:3128',
                 username=None,
                 password=None,
                 timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                ssl_context=context
+                ssl_context=default_context,
+                ca_certs=certifi.where()
             )
             response = proxy.request('GET', url)
             return response
@@ -1342,10 +1345,9 @@ def load_from_url(url):
             logger.warning(f"SOCKS proxy connection failed: {str(e)}")
             return None
             
-    # Suppress only the specific InsecureRequestWarning in development
-    if 'FLASK_ENV' in os.environ and os.environ['FLASK_ENV'] == 'development':
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # Never suppress SSL warnings
+    import urllib3
+    urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
 
     # Try different connection methods in order
     logger.info("Attempting to load URL with multiple methods...")
