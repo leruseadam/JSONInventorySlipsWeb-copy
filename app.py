@@ -1196,6 +1196,7 @@ def upload_csv():
 # Then, update the URL loading function
 @app.route('/load-url', methods=['POST'])
 def load_url():
+    logger.info(f"URL loaded: {url}")
     try:
         url = request.form.get('url')
         if not url:
@@ -1249,6 +1250,8 @@ def handle_bamboo_url(url):
         return redirect(url_for('index'))
 
 def load_from_url(url):
+    # Log the URL being loaded for debugging
+    logger.info(f"Loading data from URL: {url}")
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
     import traceback
     from requests.adapters import HTTPAdapter
@@ -1313,6 +1316,9 @@ def load_from_url(url):
 # Update data view to handle chunked data properly
 @app.route('/data-view')
 def data_view():
+        # Debug: log first 3 rows of DataFrame after loading
+        if not df.empty:
+            logger.info(f"First 3 rows of DataFrame: {df.head(3).to_dict(orient='records')}")
     try:
         # Get chunked data from session
         df_json = get_chunked_data('df_json')
