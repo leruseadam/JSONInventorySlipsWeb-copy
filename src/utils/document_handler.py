@@ -132,12 +132,6 @@ class DocumentHandler:
         previous_section = self.doc.docx.sections[-2]
         section._sectPr.append(parse_xml(previous_section._sectPr.xml))
         return section
-            
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to add content: {str(e)}")
-            return False
 
     def save_document(self, filepath):
         """Save document"""
