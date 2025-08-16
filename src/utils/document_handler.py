@@ -2,6 +2,8 @@ import logging
 from docxtpl import DocxTemplate
 import os
 from docx.shared import Pt
+from docx.enum.section import WD_SECTION
+from docx.oxml import parse_xml
 import jinja2
 
 logger = logging.getLogger(__name__)
@@ -25,9 +27,9 @@ class DocumentHandler:
         try:
             from docx.shared import Pt, Inches
             from docx.enum.text import WD_ALIGN_PARAGRAPH
-            from docx.oxml import OxmlElement
+            from docx.oxml import OxmlElement, parse_xml
             from docx.oxml.ns import qn
-            from docxcompose.composer import Composer
+            from docx.enum.section import WD_SECTION
             
             # Sort records by product type and then by product name
             sorted_records = sorted(records, 
@@ -39,13 +41,6 @@ class DocumentHandler:
             
             # Calculate total pages
             total_pages = (len(sorted_records) + 3) // 4  # Ceiling division by 4
-
-            # Store the template path for creating new pages
-            template_path = self.doc.docx.path
-            
-            # Create a new composer with the first page
-            master = self.doc.docx
-            composer = Composer(master)
             
             # Configure Jinja2 environment
             jinja_env = jinja2.Environment(
@@ -58,32 +53,30 @@ class DocumentHandler:
                 autoescape=True
             )
 
-            # Process records in groups of 4
+            # Create context for all records
+            full_context = {
+                'total_pages': total_pages,
+                'pages': []
+            }
+
+            # Prepare all page contexts
             for page_idx, start_idx in enumerate(range(0, len(sorted_records), 4), 1):
                 chunk = sorted_records[start_idx:start_idx + 4]
-                
-                # Create a new template instance for each page
-                if page_idx > 1:
-                    self.doc = DocxTemplate(template_path)
-                
-                # Initialize context for this page
-                context = {
+                page_context = {
                     'current_page': page_idx,
-                    'total_pages': total_pages,
                     'page_number': f'Page {page_idx} of {total_pages}'
                 }
                 
-                # Add context for each record in the chunk
+                # Add records for this page
                 for idx, record in enumerate(chunk, 1):
-                    # Get quantity and ensure it's a whole number
                     qty = record.get('Quantity Received*', 0)
                     try:
                         qty = float(qty)
-                        qty = int(round(qty))  # Round to nearest whole number
+                        qty = int(round(qty))
                     except (ValueError, TypeError):
                         qty = 0
 
-                    context[f'Label{idx}'] = {
+                    page_context[f'Label{idx}'] = {
                         'AcceptedDate': record.get('Accepted Date', ''),
                         'Vendor': record.get('Vendor', 'Unknown Vendor'),
                         'ProductName': record.get('Product Name*', ''),
@@ -93,7 +86,7 @@ class DocumentHandler:
                 
                 # Clear unused labels
                 for idx in range(len(chunk) + 1, 5):
-                    context[f'Label{idx}'] = {
+                    page_context[f'Label{idx}'] = {
                         'AcceptedDate': '',
                         'Vendor': '',
                         'ProductName': '',
@@ -101,29 +94,44 @@ class DocumentHandler:
                         'QuantityReceived': ''
                     }
                 
-                # Render the template
-                self.doc.render(context, jinja_env)
+                full_context['pages'].append(page_context)
+            
+            # Create section breaks and render content
+            for idx, page_context in enumerate(full_context['pages']):
+                if idx > 0:
+                    self._add_section_break()
+                
+                # Render content for this page
+                self.doc.render(page_context, jinja_env)
                 
                 # Add page number to footer
-                section = self.doc.docx.sections[-1]
+                section = self.doc.docx.sections[idx]
                 footer = section.footer
                 paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
-                # Clear existing runs if any
+                # Clear existing runs
                 for run in paragraph.runs:
                     paragraph._element.remove(run._element)
                 
-                page_number_text = paragraph.add_run(f'Page {page_idx} of {total_pages}')
+                # Add page number
+                page_number_text = paragraph.add_run(page_context['page_number'])
                 page_number_text.font.name = 'Arial'
                 page_number_text.font.size = Pt(10)
-
-                # Add the page to the composer if it's not the first page
-                if page_idx > 1:
-                    composer.append(self.doc.docx)
+                
+            return True
             
-            # Set the composed document as the final document
-            self.doc.docx = composer.doc
+        except Exception as e:
+            logger.error(f"Failed to add content: {str(e)}")
+            return False
+
+    def _add_section_break(self):
+        """Add a section break to create a new page"""
+        section = self.doc.docx.add_section(WD_SECTION.NEW_PAGE)
+        # Copy the previous section's settings
+        previous_section = self.doc.docx.sections[-2]
+        section._sectPr.append(parse_xml(previous_section._sectPr.xml))
+        return section
             
             return True
 
