@@ -5,6 +5,9 @@ from docx.shared import Pt
 from docx.enum.section import WD_SECTION
 from docx.oxml import parse_xml
 import jinja2
+from .docx_validator import DocxValidator
+import tempfile
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +143,48 @@ class DocumentHandler:
         return section
 
     def save_document(self, filepath):
-        """Save document"""
+        """Save document with validation and repair"""
         try:
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            self.doc.save(filepath)
-            return True
+            # Create a temporary file first
+            temp_dir = tempfile.mkdtemp()
+            temp_path = os.path.join(temp_dir, "temp.docx")
+            
+            try:
+                # Save to temporary file
+                self.doc.save(temp_path)
+                
+                # Validate the document
+                is_valid, validated_path = DocxValidator.validate_document(temp_path)
+                
+                if not is_valid:
+                    logger.warning("Document validation failed, attempting repair...")
+                    success, repaired_path = DocxValidator.repair_document(temp_path)
+                    
+                    if not success:
+                        logger.error("Document repair failed")
+                        return False
+                        
+                # Create target directory if needed
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                
+                # Copy the valid document to final destination
+                shutil.copy2(temp_path if is_valid else repaired_path, filepath)
+                
+                # Validate final document
+                final_valid, _ = DocxValidator.validate_document(filepath)
+                if not final_valid:
+                    logger.error("Final document validation failed")
+                    return False
+                    
+                return True
+                
+            finally:
+                # Clean up temporary files
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                    
         except Exception as e:
             logger.error(f"Failed to save document: {str(e)}")
             return False
