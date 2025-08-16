@@ -9,14 +9,20 @@ username = os.getenv('USER', 'yourusername')  # Will be replaced during deployme
 WEBAPP_PATH = f'/home/{username}/JSONInventorySlipsWeb-copy'
 VENV_PATH = f'/home/{username}/.virtualenvs/myapp'
 
-# Use system Python packages as well
+# PythonAnywhere specific paths
+PYTHON_VERSION = '3.11'
+PYTHON_PATH = f'/opt/alt/python{PYTHON_VERSION.replace(".", "")}'
 SITE_PACKAGES = [
-    os.path.join(VENV_PATH, 'lib/python3.11/site-packages'),
-    '/usr/lib/python3.11',
-    '/usr/lib/python3.11/lib-dynload',
-    '/usr/local/lib/python3.11/dist-packages',
-    '/usr/lib/python3/dist-packages'
+    os.path.join(VENV_PATH, f'lib/python{PYTHON_VERSION}/site-packages'),
+    os.path.join(PYTHON_PATH, 'lib'),
+    os.path.join(PYTHON_PATH, f'lib/python{PYTHON_VERSION}'),
+    os.path.join(PYTHON_PATH, f'lib/python{PYTHON_VERSION}/lib-dynload'),
+    os.path.join(PYTHON_PATH, 'lib/dist-packages')
 ]
+
+# Add PythonAnywhere paths to sys.path
+if PYTHON_PATH not in sys.path:
+    sys.path.insert(0, PYTHON_PATH)
 
 # Add all site-packages directories to sys.path
 for site_pkg in SITE_PACKAGES:
