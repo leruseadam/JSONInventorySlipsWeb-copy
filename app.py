@@ -482,9 +482,9 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         return False, "No data selected."
 
 def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
-    """Generate inventory slips using DocxGenerator"""
+    """Generate inventory slips using template-based DocumentHandler"""
     try:
-        from src.utils.docgen import DocxGenerator
+        from src.utils.document_handler import DocumentHandler
 
         if selected_df.empty:
             if status_callback:
@@ -493,11 +493,12 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
 
         # Get vendor name from first row
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
-        # Clean vendor name (remove special characters and spaces)
-        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
         
         # Get today's date
         today_date = datetime.now().strftime("%Y%m%d")
+        
+        # Clean vendor name (remove special characters and spaces)
+        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
         
         # Create filename
         outname = f"{today_date}_{vendor_name}_Slips.docx"
@@ -506,41 +507,48 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         if status_callback:
             status_callback("Processing data...")
 
-        # Clean and validate the data
+        # Initialize document handler
+        doc_handler = DocumentHandler()
+        
+        # Load template
+        template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
+        if not os.path.exists(template_path):
+            return False, f"Template not found at {template_path}"
+            
+        doc_handler.create_document(template_path)
+
+        # Process records in chunks of 4 (for template layout)
         records = []
-        for _, row in selected_df.iterrows():
-            # Get vendor info, using full vendor name if available
-            vendor_name = row.get("Vendor", "")
-            if " - " in vendor_name:
-                vendor_name = vendor_name.split(" - ")[1]
+        for chunk_start in range(0, len(selected_df), 4):
+            chunk = selected_df.iloc[chunk_start:chunk_start+4]
+            for _, row in chunk.iterrows():
+                # Get vendor info, using full vendor name if available
+                vendor_name = row.get("Vendor", "")
+                if " - " in vendor_name:
+                    vendor_name = vendor_name.split(" - ")[1]
                 
-            record = {
-                "Product Name*": str(row.get("Product Name*", ""))[:100],
-                "Barcode*": str(row.get("Barcode*", ""))[:50],
-                "Accepted Date": str(row.get("Accepted Date", ""))[:20],
-                "Quantity Received*": str(row.get("Quantity Received*", ""))[:20],
-                "Vendor": str(vendor_name or "Unknown Vendor")[:50],
-                "Product Type*": str(row.get("Product Type*", ""))[:50]
-            }
-            records.append(record)
+                record = {
+                    "Product Name*": str(row.get("Product Name*", ""))[:100],
+                    "Barcode*": str(row.get("Barcode*", ""))[:50],
+                    "Accepted Date": str(row.get("Accepted Date", ""))[:20],
+                    "Quantity Received*": str(row.get("Quantity Received*", ""))[:20],
+                    "Vendor": str(vendor_name or "Unknown Vendor")[:50],
+                    "Product Type*": str(row.get("Product Type*", ""))[:50]
+                }
+                records.append(record)
 
         if status_callback:
             status_callback("Generating document...")
 
-        # Create generator and generate document
-        generator = DocxGenerator()
-        generator.generate_inventory_slip(
-            records=records,
-            vendor_name=vendor_name,
-            date=today_date,
-            rows_per_page=int(config['SETTINGS'].get('items_per_page', '4'))
-        )
+        # Add content to document
+        if not doc_handler.add_content_to_table(records):
+            return False, "Failed to add content to document"
 
         if status_callback:
             status_callback("Saving document...")
 
-        # Save document with proper error handling
-        if generator.save(outpath):
+        # Save document
+        if doc_handler.save_document(outpath):
             if os.path.exists(outpath):
                 # Adjust font sizes
                 if status_callback:
