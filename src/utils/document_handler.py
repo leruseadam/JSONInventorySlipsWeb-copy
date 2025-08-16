@@ -31,12 +31,20 @@ class DocumentHandler:
             
             # Add context for each record in the chunk
             for idx, record in enumerate(chunk, 1):
+                # Get quantity and ensure it's a whole number
+                qty = record.get('Quantity Received*', 0)
+                try:
+                    qty = float(qty)
+                    qty = int(round(qty))  # Round to nearest whole number
+                except (ValueError, TypeError):
+                    qty = 0
+
                 context[f'Label{idx}'] = {
                     'AcceptedDate': record.get('Accepted Date', ''),
                     'Vendor': record.get('Vendor', 'Unknown Vendor'),
                     'ProductName': record.get('Product Name*', ''),
                     'Barcode': record.get('Barcode*', ''),
-                    'QuantityReceived': str(record.get('Quantity Received*', ''))
+                    'QuantityReceived': str(qty)
                 }
             
             # Clear unused labels
