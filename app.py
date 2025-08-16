@@ -1263,28 +1263,33 @@ def load_from_url(url):
     import certifi
     from urllib3.contrib.socks import SOCKSProxyManager
     from urllib3.connection import HTTPConnection
+
+    # Configure global SSL context
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+    ssl_context.check_hostname = True
     
-    # Configure urllib3 to use system certificates plus certifi
-    try:
-        default_context = ssl.create_default_context(cafile=certifi.where())
-        # Enforce certificate verification
-        default_context.verify_mode = ssl.CERT_REQUIRED
-        # Enable hostname verification
-        default_context.check_hostname = True
-        urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
-        urllib3.util.ssl_.SSL_CONTEXT_FACTORY = lambda: default_context
-    except Exception as e:
-        logger.error(f"Error configuring SSL context: {e}")
-        raise
+    class SSLAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            context = create_urllib3_context()
+            context.load_verify_locations(cafile=certifi.where())
+            kwargs['ssl_context'] = context
+            return super(SSLAdapter, self).init_poolmanager(*args, **kwargs)
+            
+        def proxy_manager_for(self, *args, **kwargs):
+            context = create_urllib3_context()
+            context.load_verify_locations(cafile=certifi.where())
+            kwargs['ssl_context'] = context
+            return super(SSLAdapter, self).proxy_manager_for(*args, **kwargs)
     
     def try_direct_connection(url, timeout=60):
         """Try to connect directly without proxy"""
         try:
             session = requests.Session()
             
-            # Use the pre-configured SSL context
+            # Use our configured SSL context
             adapter = HTTPAdapter(max_retries=3)
-            adapter.poolmanager.connection_pool_kw['ssl_context'] = default_context
+            adapter.poolmanager.connection_pool_kw['ssl_context'] = ssl_context
             session.mount('https://', adapter)
             
             # Always verify SSL
@@ -1322,7 +1327,7 @@ def load_from_url(url):
                 username=None,
                 password=None,
                 timeout=urllib3.Timeout(connect=timeout, read=timeout),
-                ssl_context=default_context,
+                ssl_context=ssl_context,
                 ca_certs=certifi.where()
             )
             response = proxy.request('GET', url)
@@ -1375,14 +1380,17 @@ def load_from_url(url):
         'https': 'http://proxy.pythonanywhere.com:3128',
     }
     
-    # Configure session to use certifi's certificate bundle
+    # Configure session to use our SSL context
+    adapter = HTTPAdapter(max_retries=retries)
+    adapter.poolmanager.connection_pool_kw['ssl_context'] = ssl_context
+    session.mount('https://', adapter)
     session.verify = certifi.where()
     
     try:
         response = session.get(url, 
                              timeout=60,
                              proxies=proxies,
-                             verify=False,
+                             verify=True,  # Always verify SSL
                              stream=True)
         if response.status_code == 200:
             logger.info("HTTP proxy connection successful")
