@@ -17,13 +17,24 @@ for path in paths:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-# Configure logging with rotation
-log_file = os.path.join(WEBAPP_PATH, 'app.log')
-handler = RotatingFileHandler(log_file, maxBytes=100000, backupCount=3)
-handler.setLevel(logging.INFO)
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging with rotation (use /tmp for PythonAnywhere compatibility)
+log_directory = '/tmp/jsoninventoryslips'
+try:
+    os.makedirs(log_directory, exist_ok=True)
+    log_file = os.path.join(log_directory, 'app.log')
+    handler = RotatingFileHandler(log_file, maxBytes=100000, backupCount=3)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+except Exception as e:
+    print(f'Failed to set up logging: {str(e)}')
+    # Fallback to stderr logging
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 handler.setFormatter(formatter)
 
 logger = logging.getLogger('wsgi')
