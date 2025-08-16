@@ -155,7 +155,7 @@ except Exception as e:
     logger.error(traceback.format_exc())
     raise
 
-def application(environ, start_response):
+def wsgi_handler(environ, start_response):
     """WSGI application function with error handling"""
     try:
         return application(environ, start_response)
@@ -173,6 +173,10 @@ def application(environ, start_response):
         except Exception as e:
             logger.warning(f'Cleanup error: {str(e)}')
 
+# Replace the application variable with our handler
+application = wsgi_handler
+
 # Local development server (not used on PythonAnywhere)
 if __name__ == '__main__':
-    application.run(debug=False, use_reloader=False)
+    from app import app as flask_app
+    flask_app.run(debug=False, use_reloader=False)
