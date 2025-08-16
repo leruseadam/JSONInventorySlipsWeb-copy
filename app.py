@@ -1745,7 +1745,7 @@ def data_view():
 
 @app.route('/generate-slips', methods=['POST'])
 def generate_slips():
-    """Generate inventory slips using the original template-based method"""
+    """Generate inventory slips using simple document generation"""
     try:
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
@@ -1791,24 +1791,55 @@ def generate_slips():
         # Load configuration
         config = load_config()
         
-        # Generate the file
-        status_messages = []
-        progress_values = []
+        # Generate the file using simple document generator
+        from src.utils.simple_document_generator import SimpleDocumentGenerator
         
-        def status_callback(msg):
-            status_messages.append(msg)
-            logger.info(f"Status: {msg}")
+        # Get vendor name from first row
+        vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
+        today_date = datetime.now().strftime("%Y%m%d")
         
-        def progress_callback(value):
-            progress_values.append(value)
+        # Clean vendor name for filename
+        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
         
-        logger.info("Starting document generation...")
-        success, result = run_full_process_inventory_slips(
-            selected_df,
-            config,
-            status_callback,
-            progress_callback
-        )
+        # Create filename
+        outname = f"{today_date}_{vendor_name}_Slips.docx"
+        outpath = os.path.join(config['PATHS']['output_dir'], outname)
+        
+        # Prepare records
+        records = []
+        for _, row in selected_df.iterrows():
+            qty = row.get('Quantity Received*', 0)
+            try:
+                qty = float(qty)
+                qty = int(round(qty))
+            except (ValueError, TypeError):
+                qty = 0
+                
+            vendor = row.get('Vendor', '')
+            if ' - ' in vendor:
+                vendor = vendor.split(' - ')[1]
+                
+            records.append({
+                'ProductName': str(row.get('Product Name*', ''))[:100],
+                'Barcode': str(row.get('Barcode*', ''))[:50],
+                'AcceptedDate': str(row.get('Accepted Date', ''))[:20],
+                'QuantityReceived': str(qty),
+                'Vendor': str(vendor or 'Unknown Vendor')[:50]
+            })
+        
+        # Generate document
+        generator = SimpleDocumentGenerator()
+        success, error = generator.generate_document(records)
+        
+        if success:
+            success, error = generator.save(outpath)
+            if success:
+                result = outpath
+            else:
+                result = f"Failed to save document: {error}"
+                success = False
+        else:
+            result = f"Failed to generate document: {error}"
         
         if success:
             logger.info(f"Document generated successfully: {result}")
