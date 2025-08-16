@@ -43,42 +43,61 @@ class DocumentHandler:
                                 all_elements.append(('table_cell', paragraph))
 
                 # Replace placeholders for each record in chunk
-                    for idx, record in enumerate(chunk, 1):
-                        replacements = {
-                            f'Label{idx}.AcceptedDate': record.get('Accepted Date', ''),
-                            f'Label{idx}.Vendor': record.get('Vendor', 'Unknown Vendor'),
-                            f'Label{idx}.ProductName': record.get('Product Name*', ''),
-                            f'Label{idx}.Barcode': record.get('Barcode*', ''),
-                            f'Label{idx}.QuantityReceived': str(record.get('Quantity Received*', ''))
-                        }
+                for idx, record in enumerate(chunk, 1):
+                    replacements = {
+                        f'Label{idx}.AcceptedDate': record.get('Accepted Date', ''),
+                        f'Label{idx}.Vendor': record.get('Vendor', 'Unknown Vendor'),
+                        f'Label{idx}.ProductName': record.get('Product Name*', ''),
+                        f'Label{idx}.Barcode': record.get('Barcode*', ''),
+                        f'Label{idx}.QuantityReceived': str(record.get('Quantity Received*', ''))
+                    }
 
-                        # Process each element
-                        for element_type, paragraph in all_elements:
-                            # Join all runs into one text first
-                            full_text = ''.join(run.text for run in paragraph.runs)
-                            needs_update = False
-                            
-                            # Create a copy of the text for checking
-                            working_text = full_text
+                    # Process each element
+                    for element_type, paragraph in all_elements:
+                        # First collect all text from all runs to check for placeholders
+                        runs_text = []
+                        original_runs = list(paragraph.runs)
+                        for run in original_runs:
+                            runs_text.append(run.text)
+                        full_text = ''.join(runs_text)
 
-                            # Check and replace all placeholders
-                            for placeholder, value in replacements.items():
-                                placeholder_pattern = f'{{{{{placeholder}}}}}'
-                                if placeholder_pattern in working_text:
-                                    working_text = working_text.replace(placeholder_pattern, str(value))
-                                    needs_update = True                        # If we found and replaced a placeholder, update all runs
+                        # Check if any replacements are needed
+                        working_text = full_text
+                        needs_update = False
+                        
+                        for placeholder, value in replacements.items():
+                            placeholder_pattern = f'{{{{{placeholder}}}}}'
+                            if placeholder_pattern in working_text:
+                                working_text = working_text.replace(placeholder_pattern, str(value))
+                                needs_update = True                        # If we found and replaced a placeholder, update all runs
                         if needs_update:
-                            # Clear existing runs
-                            while len(paragraph.runs) > 0:
-                                paragraph._p.remove(paragraph.runs[0]._r)
+                            # Store the formatting from the first run
+                            first_run_format = None
+                            if original_runs:
+                                first_run = original_runs[0]
+                                first_run_format = {
+                                    'font_name': first_run.font.name,
+                                    'font_size': first_run.font.size,
+                                    'bold': first_run.bold,
+                                    'italic': first_run.italic
+                                }
+
+                            # Clear all existing runs while preserving paragraph properties
+                            for run in paragraph.runs:
+                                run._element.getparent().remove(run._element)
                             
                             # Add new run with replaced text
-                            run = paragraph.add_run(working_text)
-                            run.font.name = 'Arial'
-                            run.font.size = Pt(11)
+                            new_run = paragraph.add_run(working_text)
                             
-                            # Clear any trailing whitespace/newlines
-                            paragraph._p.remove_all_tags('w:lastRenderedPageBreak')
+                            # Apply stored formatting or default formatting
+                            if first_run_format:
+                                new_run.font.name = first_run_format['font_name'] or 'Arial'
+                                new_run.font.size = first_run_format['font_size'] or Pt(11)
+                                new_run.bold = first_run_format['bold']
+                                new_run.italic = first_run_format['italic']
+                            else:
+                                new_run.font.name = 'Arial'
+                                new_run.font.size = Pt(11)
 
                 # Clean up unused placeholders
                 for idx in range(len(chunk) + 1, 5):
