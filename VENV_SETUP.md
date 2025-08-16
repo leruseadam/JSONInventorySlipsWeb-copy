@@ -4,7 +4,9 @@
 
 ### Activate Virtual Environment
 ```bash
-source venv/bin/activate
+workon myapp  # If using virtualenvwrapper
+# OR
+source ~/.virtualenvs/myapp/bin/activate  # Direct path activation
 ```
 
 ### Deactivate Virtual Environment
@@ -15,6 +17,12 @@ deactivate
 ### Install Dependencies
 ```bash
 pip install -r requirements.txt
+```
+
+### Virtual Environment Location
+The virtual environment is located at:
+```bash
+/home/adamcordova/.virtualenvs/myapp
 ```
 
 ### Run the App
@@ -70,14 +78,15 @@ If you get import errors:
 
 ## Dependencies Installed
 
-- Flask 3.1.1
-- requests 2.32.4
-- pandas 2.3.1
-- python-docx 1.2.0
-- docxtpl 0.20.1
+- Flask 3.0.0
+- requests 2.31.0
+- pandas 2.1.0
+- python-docx 1.0.0
+- docxtpl 0.16.7
 - docxcompose 1.4.0
-- Werkzeug 3.1.3
-- configparser 7.2.0
+- Werkzeug 3.0.0
+- configparser 6.0.0
+- Python 3.11
 
 ## Running the App
 
