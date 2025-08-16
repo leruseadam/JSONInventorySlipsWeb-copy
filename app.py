@@ -1256,59 +1256,112 @@ def load_from_url(url):
     import traceback
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
+    import urllib3
+    import socket
+    from urllib3.connection import HTTPConnection
+    
+    # Create a custom connection class with longer timeouts
+    class CustomHTTPConnection(HTTPConnection):
+        def __init__(self, *args, **kwargs):
+            timeout = kwargs.pop('timeout', None)
+            super().__init__(*args, **kwargs)
+            if timeout is None:
+                timeout = socket.getdefaulttimeout()
+            # Force longer timeouts
+            self.timeout = timeout
+            
+        def connect(self):
+            # Set TCP keepalive on the socket
+            sock = socket.create_connection(
+                (self._dns_host, self.port),
+                timeout=self.timeout,
+                source_address=None
+            )
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Linux specific: set TCP keepalive parameters
+            try:
+                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 60)
+                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPINTVL, 10)
+                sock.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 6)
+            except AttributeError:
+                pass  # Not on Linux
+            self.sock = sock
+    
+    class CustomPoolManager(urllib3.PoolManager):
+        def _new_pool(self, scheme, host, port, request_context=None):
+            kwargs = self.connection_pool_kw.copy()
+            kwargs['timeout'] = 300  # 5 minutes total timeout
+            kwargs['retries'] = 3
+            pool = urllib3.HTTPConnectionPool(
+                host,
+                port,
+                timeout=300,
+                strict=True,
+                **kwargs
+            )
+            pool.ConnectionCls = CustomHTTPConnection
+            return pool
+    
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; InventorySlipsBot/1.0)',
-        'Accept-Encoding': 'gzip, deflate'  # Support compression
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive'
     }
+    
     session = requests.Session()
     retries = Retry(
-        total=5,  # Increased retries
-        backoff_factor=0.5,  # Shorter backoff
+        total=5,
+        backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]  # Explicitly allow methods
+        allowed_methods=["HEAD", "GET", "OPTIONS"],
+        respect_retry_after_header=True
     )
-    # Use longer timeout for connection, shorter for read
-    adapter = HTTPAdapter(max_retries=retries, pool_connections=3, pool_maxsize=10)
+    
+    # Use custom connection pool
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=1,  # Limit connections
+        pool_maxsize=1,
+        pool_block=True
+    )
     session.mount('https://', adapter)
     session.mount('http://', adapter)
     
     # Add proxy support for PythonAnywhere
-    # See: https://help.pythonanywhere.com/pages/OutboundHttpRequests/
     proxies = {
         'http': 'http://proxy.pythonanywhere.com:3128',
         'https': 'http://proxy.pythonanywhere.com:3128',
     }
     
     try:
-        # First make a HEAD request to check content length
-        head = session.head(url, timeout=30, headers=headers, verify=False, proxies=proxies)
-        content_length = int(head.headers.get('content-length', 0))
+        # Skip HEAD request and go straight for the data
+        response = session.get(
+            url,
+            timeout=300,  # Single long timeout
+            headers=headers,
+            verify=False,
+            proxies=proxies,
+            stream=True  # Always use streaming
+        )
         
-        # If file is large, use streaming
-        if content_length > 5 * 1024 * 1024:  # 5MB
-            response = session.get(
-                url,
-                timeout=(30, 240),  # (connect timeout, read timeout)
-                headers=headers,
-                verify=False,
-                proxies=proxies,
-                stream=True  # Enable streaming
-            )
-            # Read in chunks
-            content = b''
-            for chunk in response.iter_content(chunk_size=8192):
+        # Read in small chunks with progress logging
+        content = b''
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024  # 1KB
+        
+        if total_size > 0:
+            for chunk in response.iter_content(chunk_size=block_size):
                 if chunk:
                     content += chunk
-            response._content = content  # Set content for json() to work
+                    if len(content) % (1024 * 1024) == 0:  # Log every MB
+                        logger.info(f"Downloaded {len(content) // (1024*1024)}MB of {total_size // (1024*1024)}MB")
         else:
-            # For smaller files, download normally
-            response = session.get(
-                url,
-                timeout=(30, 240),  # (connect timeout, read timeout)
-                headers=headers,
-                verify=False,
-                proxies=proxies
-            )
+            # If no content length, just read chunks
+            for chunk in response.iter_content(chunk_size=block_size):
+                if chunk:
+                    content += chunk
+                    
+        response._content = content  # Set content for json() to work
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
