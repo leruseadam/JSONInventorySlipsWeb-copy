@@ -112,8 +112,14 @@
               <tbody id="productsTableBody">
                 {% for group in range((products|length + 3) // 4) %}
                   <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group }}">
-                    <td colspan="6" style="font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;">
-                      Group {{ group + 1 }}
+                    <td colspan="6" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
+                      <div class="d-flex justify-content-between align-items-center">
+                        <span style="font-weight: 600;">Group {{ group + 1 }}</span>
+                        <div class="form-check">
+                          <input type="checkbox" class="form-check-input group-select-all" data-group="{{ group }}" id="group{{ group }}SelectAll" aria-label="Select all in group {{ group + 1 }}">
+                          <label class="form-check-label" for="group{{ group }}SelectAll">Select All</label>
+                        </div>
+                      </div>
                     </td>
                   </tr>
                   {% for i in range(4) %}
@@ -401,12 +407,39 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.product-checkbox').forEach(checkbox => {
                 checkbox.checked = this.checked;
             });
+            // Update all group select all checkboxes
+            document.querySelectorAll('.group-select-all').forEach(groupCheckbox => {
+                groupCheckbox.checked = this.checked;
+            });
         });
     }
     
-    // Update select all checkbox when individual checkboxes change
+    // Handle group select all checkboxes
+    document.querySelectorAll('.group-select-all').forEach(groupCheckbox => {
+        groupCheckbox.addEventListener('change', function() {
+            const group = this.getAttribute('data-group');
+            document.querySelectorAll(`.product-checkbox[data-group="${group}"]`).forEach(checkbox => {
+                checkbox.checked = this.checked;
+            });
+            updateSelectAllCheckbox();
+        });
+    });
+    
+    // Update select all checkbox and group select all when individual checkboxes change
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+        const group = checkbox.closest('tr').getAttribute('data-group');
+        checkbox.setAttribute('data-group', group);
+        
         checkbox.addEventListener('change', function() {
+            // Update group select all
+            const group = this.getAttribute('data-group');
+            const groupCheckbox = document.querySelector(`.group-select-all[data-group="${group}"]`);
+            if (groupCheckbox) {
+                const groupCheckboxes = Array.from(document.querySelectorAll(`.product-checkbox[data-group="${group}"]`));
+                groupCheckbox.checked = groupCheckboxes.every(cb => cb.checked);
+            }
+            
+            // Update main select all
             const allChecked = Array.from(document.querySelectorAll('.product-checkbox'))
                 .every(cb => cb.checked);
             const selectAllCheckbox = document.getElementById('selectAllCheckbox');
@@ -785,6 +818,19 @@ document.addEventListener('DOMContentLoaded', function() {
 .table-inventory .table-group-header {
     background: #102d4a !important;
     color: #7fd6ff !important;
+}
+.table-inventory .table-group-header .form-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+}
+.table-inventory .table-group-header .form-check-input {
+    margin: 0;
+}
+.table-inventory .table-group-header .form-check-label {
+    color: #aee7ff !important;
+    margin: 0;
 }
 .table-inventory .group-product-row {
     background: #0a2342 !important;
