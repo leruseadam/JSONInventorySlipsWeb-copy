@@ -13,10 +13,17 @@ class DocumentHandler:
         
     def create_document(self, template_path):
         """Create document from template"""
+        logger.info(f"Attempting to load template from: {template_path}")
         if not os.path.exists(template_path):
             raise ValueError(f"Template not found: {template_path}")
-        self.doc = Document(template_path)
-        return self.doc
+        logger.info(f"Template exists, loading now...")
+        try:
+            self.doc = Document(template_path)
+            logger.info(f"Template loaded successfully")
+            return self.doc
+        except Exception as e:
+            logger.error(f"Failed to load template: {str(e)}")
+            raise
 
     def add_content_to_table(self, records):
         """Add content to document replacing placeholders"""

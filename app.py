@@ -362,7 +362,7 @@ def load_config():
     
     # Default configurations
     config['PATHS'] = {
-        'template_path': os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx"),
+        'template_path': os.path.join(os.path.dirname(__file__), "templates", "documents", "InventorySlips.docx"),
         'output_dir': DEFAULT_SAVE_DIR,  # Use the new DEFAULT_SAVE_DIR
         'recent_files': '',
         'recent_urls': ''
