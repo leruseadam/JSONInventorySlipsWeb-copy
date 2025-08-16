@@ -9,6 +9,20 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
+def validate_docx(filepath):
+    """
+    Validate that a docx file exists and can be opened.
+    
+    Args:
+        filepath (str): Path to the docx file
+        
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    validator = DocxValidator()
+    is_valid, _ = validator.validate_document(filepath)
+    return is_valid
+
 class DocxValidator:
     @staticmethod
     def validate_document(file_path):
