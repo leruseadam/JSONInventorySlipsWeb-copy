@@ -1258,16 +1258,26 @@ def load_from_url(url):
     from urllib3.util.retry import Retry
     import urllib3
     import socket
-    import socks
     import ssl
     import certifi
-    from urllib3.contrib.socks import SOCKSProxyManager
     from urllib3.connection import HTTPConnection
 
     # Configure global SSL context
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     ssl_context.verify_mode = ssl.CERT_REQUIRED
     ssl_context.check_hostname = True
+
+    # Configure urllib3 to use the secure context by default
+    urllib3.util.ssl_.DEFAULT_CERTS = certifi.where()
+    
+    # Optionally import SOCKS support
+    try:
+        import socks
+        from urllib3.contrib.socks import SOCKSProxyManager
+        SOCKS_AVAILABLE = True
+    except ImportError:
+        SOCKS_AVAILABLE = False
+        logger.info("SOCKS proxy support not available - falling back to direct/HTTP proxy")
     
     class SSLAdapter(HTTPAdapter):
         def init_poolmanager(self, *args, **kwargs):
@@ -1287,20 +1297,22 @@ def load_from_url(url):
         try:
             session = requests.Session()
             
-            # Use our configured SSL context
-            adapter = HTTPAdapter(max_retries=3)
-            adapter.poolmanager.connection_pool_kw['ssl_context'] = ssl_context
+            class SSLAdapter(HTTPAdapter):
+                def init_poolmanager(self, *args, **kwargs):
+                    kwargs['ssl_context'] = ssl_context
+                    return super().init_poolmanager(*args, **kwargs)
+
+            # Use our custom adapter with proper SSL context
+            adapter = SSLAdapter(max_retries=3)
             session.mount('https://', adapter)
             
-            # Always verify SSL
+            # Set verify to True and use certifi's certificates
             session.verify = certifi.where()
-            response = session.get(url, timeout=timeout)
             
-            # Verify the response
-            if not response.ok:
-                raise requests.exceptions.RequestException(f"Bad response: {response.status_code}")
-                
+            response = session.get(url, timeout=timeout)
+            response.raise_for_status()  # Raise exception for bad status codes
             return response
+            
         except requests.exceptions.SSLError as e:
             logger.error(f"SSL verification failed: {str(e)}")
             raise  # Always fail on SSL errors
@@ -1321,8 +1333,12 @@ def load_from_url(url):
             
     def try_socks_connection(url, timeout=60):
         """Try to connect using SOCKS proxy"""
+        if not SOCKS_AVAILABLE:
+            logger.warning("SOCKS proxy support not available")
+            return None
+            
         try:
-            proxy = urllib3.SOCKSProxyManager(
+            proxy = SOCKSProxyManager(
                 'socks5h://proxy.pythonanywhere.com:3128',
                 username=None,
                 password=None,
@@ -1380,9 +1396,14 @@ def load_from_url(url):
         'https': 'http://proxy.pythonanywhere.com:3128',
     }
     
-    # Configure session to use our SSL context
-    adapter = HTTPAdapter(max_retries=retries)
-    adapter.poolmanager.connection_pool_kw['ssl_context'] = ssl_context
+    # Configure session with custom SSL adapter
+    class SSLAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs['ssl_context'] = ssl_context
+            return super().init_poolmanager(*args, **kwargs)
+    
+    # Use our custom adapter
+    adapter = SSLAdapter(max_retries=retries)
     session.mount('https://', adapter)
     session.verify = certifi.where()
     
