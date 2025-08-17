@@ -1655,13 +1655,23 @@ def generate_slips():
                 
                 # Generate document with progress tracking
                 # Log template location
-                template_path = os.path.join(get_webapp_dir(), 'templates', 'documents', 'InventorySlips.docx')
-                logger.info(f"Using template at: {template_path}")
-                if not os.path.exists(template_path):
-                    template_path = os.path.join(get_webapp_dir(), 'templates', 'InventorySlips.docx')
-                    logger.info(f"Trying alternate template path: {template_path}")
-                if not os.path.exists(template_path):
-                    raise ValueError(f"Template file not found in any location")
+                webapp_dir = get_webapp_dir()
+                template_paths = [
+                    os.path.join(webapp_dir, 'templates', 'documents', 'InventorySlips.docx'),
+                    os.path.join(webapp_dir, 'templates', 'InventorySlips.docx'),
+                    os.path.join(webapp_dir, 'InventorySlips.docx')
+                ]
+                
+                template_path = None
+                for path in template_paths:
+                    logger.info(f"Checking template path: {path}")
+                    if os.path.exists(path):
+                        template_path = path
+                        logger.info(f"Using template at: {template_path}")
+                        break
+                        
+                if not template_path:
+                    raise ValueError(f"Template file not found in any location. Tried: {', '.join(template_paths)}")
                 
                 generator = SimpleDocumentGenerator(template_path)
                 logger.info("Generating document...")

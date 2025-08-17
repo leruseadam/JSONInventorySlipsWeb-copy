@@ -21,6 +21,8 @@ class SimpleDocumentGenerator:
         self.doc = None
         self.template_path = template_path
         self._format_type = None  # Will store the detected placeholder format type
+        if template_path:
+            self._load_template()  # Load template immediately if path is provided
         
     def _analyze_template_content(self, template_path):
         """Analyze template content to find placeholders and document structure"""
@@ -207,61 +209,102 @@ class SimpleDocumentGenerator:
         
     def _add_label(self, cell, data):
         """Add formatted content to a cell with improved layout"""
-        # Clear any existing content
-        cell._element.clear_content()
-        
-        # Add spacing at top
-        p = cell.add_paragraph()
-        p.add_run().add_break()
-        
-        # Product Name - centered and larger
-        p = cell.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        name_run = p.add_run(data.get('ProductName', ''))
-        name_run.font.name = 'Arial'
-        name_run.font.size = Pt(14)
-        name_run.font.bold = True
-        
-        # Add some space after product name
-        p.add_run().add_break()
-        
-        # Details section - centered
-        details = cell.add_paragraph()
-        details.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
-        # Barcode
-        barcode_run = details.add_run(f"Barcode: {data.get('Barcode', '')}\n")
-        barcode_run.font.name = 'Arial'
-        barcode_run.font.size = Pt(11)
-        
-        # Quantity - bold
-        qty = data.get('QuantityReceived', '')
-        qty_run = details.add_run(f"Quantity: ")
-        qty_run.font.name = 'Arial'
-        qty_run.font.size = Pt(11)
-        qty_val_run = details.add_run(f"{qty}\n")
-        qty_val_run.font.name = 'Arial'
-        qty_val_run.font.size = Pt(12)
-        qty_val_run.font.bold = True
-        
-        # Add a line break for spacing
-        details.add_run().add_break()
-        
-        # Date and Vendor on separate lines for clarity
-        date_vendor = cell.add_paragraph()
-        date_vendor.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
-        date_run = date_vendor.add_run(f"Date: {data.get('AcceptedDate', '')}\n")
-        date_run.font.name = 'Arial'
-        date_run.font.size = Pt(10)
-        
-        vendor_run = date_vendor.add_run(f"Vendor: {data.get('Vendor', '')}")
-        vendor_run.font.name = 'Arial'
-        vendor_run.font.size = Pt(10)
-        
-        # Add bottom spacing
-        p = cell.add_paragraph()
-        p.add_run().add_break()
+        try:
+            logger.debug(f"Adding content to cell with data: {data}")
+            
+            # Remove existing content (if any)
+            for paragraph in cell.paragraphs:
+                if paragraph._element.getparent() is not None:
+                    paragraph._element.getparent().remove(paragraph._element)
+            
+            # Product Name Section
+            name_p = cell.add_paragraph()
+            name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            name_p.space_after = Pt(12)  # Add space after name
+            
+            name_run = name_p.add_run(data.get('ProductName', ''))
+            name_run.font.name = 'Arial'
+            name_run.font.size = Pt(14)
+            name_run.font.bold = True
+            
+            # Details Section
+            details_p = cell.add_paragraph()
+            details_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            details_p.space_after = Pt(6)  # Add space after details
+            
+            # Barcode
+            barcode_run = details_p.add_run(f"Barcode: {data.get('Barcode', '')}")
+            barcode_run.font.name = 'Arial'
+            barcode_run.font.size = Pt(11)
+            details_p.add_run('\n')  # Line break after barcode
+            
+            # Quantity
+            qty_label_run = details_p.add_run("Quantity: ")
+            qty_label_run.font.name = 'Arial'
+            qty_label_run.font.size = Pt(11)
+            
+            qty_run = details_p.add_run(str(data.get('QuantityReceived', '')))
+            qty_run.font.name = 'Arial'
+            qty_run.font.size = Pt(12)
+            qty_run.font.bold = True
+            
+            # Date & Vendor Section
+            info_p = cell.add_paragraph()
+            info_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            date_run = info_p.add_run(f"Date: {data.get('AcceptedDate', '')}")
+            date_run.font.name = 'Arial'
+            date_run.font.size = Pt(10)
+            info_p.add_run('\n')  # Line break between date and vendor
+            
+            vendor_run = info_p.add_run(f"Vendor: {data.get('Vendor', '')}")
+            vendor_run.font.name = 'Arial'
+            vendor_run.font.size = Pt(10)
+            
+            # Add borders to the cell
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            
+            # Set cell borders
+            def set_cell_border(cell, **kwargs):
+                tc = cell._tc
+                tcPr = tc.get_or_add_tcPr()
+                
+                for edge in ('top', 'left', 'bottom', 'right'):
+                    border_name = f'w:border_{edge}'
+                    if edge in kwargs:
+                        tag = f'{edge}Val'
+                        border = OxmlElement('w:tblBorders')
+                        border_el = OxmlElement(f'w:{edge}')
+                        border_el.set(qn('w:val'), kwargs[edge])
+                        border_el.set(qn('w:sz'), '4')
+                        border_el.set(qn('w:space'), '0')
+                        border_el.set(qn('w:color'), 'auto')
+                        tcPr.append(border_el)
+            
+            # Add borders to cell
+            set_cell_border(cell, 
+                          top="single",
+                          left="single",
+                          bottom="single",
+                          right="single")
+            
+            # Set cell vertical alignment to center
+            from docx.enum.text import WD_ALIGN_VERTICAL
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            
+            # Verify content was added
+            content_length = sum(len(p.text) for p in cell.paragraphs)
+            logger.debug(f"Added content to cell. Total length: {content_length} chars")
+            
+            if content_length == 0:
+                raise ValueError("No content was added to cell")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding label to cell: {str(e)}")
+            raise
         
     def _replace_placeholder_text(self, paragraph, old_text, new_text):
         """Safely replace placeholder text in a paragraph with better formatting preservation"""
@@ -409,120 +452,120 @@ class SimpleDocumentGenerator:
             return False
 
     def generate_document(self, records):
-        """Generate document using the exact template"""
+        """Generate document with inventory slip labels"""
         try:
             if not records:
                 return False, "No records provided"
-
+            
             logger.info("Starting document generation...")
             logger.info(f"Number of records to process: {len(records)}")
-            logger.debug(f"First record sample: {records[0] if records else 'No records'}")
-
-            # Start with a fresh document
-            self.doc = Document()
             
-            # Set up the document
-            section = self.doc.sections[0]
-            section.page_width = Inches(8.5)
-            section.page_height = Inches(11)
-            section.left_margin = Inches(0.5)
-            section.right_margin = Inches(0.5)
-            section.top_margin = Inches(0.5)
-            section.bottom_margin = Inches(0.5)
-            
-            # Create main table
-            table = self.doc.add_table(rows=4, cols=1)
-            table.style = 'Table Grid'
-            table.autofit = False
-            
-            # Set column width for full page width
-            cell_width = Inches(7.5)  # Page width minus margins
-            for cell in table.columns[0].cells:
-                cell.width = cell_width
+            # If template is not loaded, try to load it
+            if not self.doc:
+                if not self.template_path:
+                    raise ValueError("No template path provided and no template loaded")
+                self._load_template()
                 
-            # Calculate total pages needed
-            total_pages = (len(records) + 3) // 4  # 4 records per page
-            logger.info(f"Will generate {total_pages} pages")
+            if not self.doc:
+                raise ValueError("Failed to load document template")
             
-            # Process records
-            current_page = 1
+            # Process records in batches of 4 (labels per page)
+            page_number = 1
+            records_processed = 0
+            
             for i in range(0, len(records), 4):
-                if i > 0:  # Add page break between pages
+                logger.info(f"Processing page {page_number}")
+                
+                # Add page break between pages (except first page)
+                if i > 0:
                     self.doc.add_page_break()
-                    # Add new table for this page
-                    table = self.doc.add_table(rows=4, cols=1)
-                    table.style = 'Table Grid'
-                    table.autofit = False
-                    for cell in table.columns[0].cells:
-                        cell.width = cell_width
                 
-                # Process this page's records
+                # Create table for this page
+                table = self.doc.add_table(rows=4, cols=1)
+                table.style = 'Table Grid'
+                table.autofit = False
+                
+                # Set column width
+                for cell in table.columns[0].cells:
+                    cell.width = Inches(7.5)
+                
+                # Process records for this page
                 page_records = records[i:i + 4]
-                for idx, record in enumerate(page_records):
-                    logger.info(f"Processing record {idx + 1} on page {current_page}")
-                    
-                    # Clean up vendor name if needed
-                    vendor = record.get('Vendor', 'Unknown')
-                    if ' - ' in vendor:
-                        vendor = vendor.split(' - ')[1]
-                    
-                    # Prepare record data
-                    record_data = {
-                        'ProductName': str(record.get('ProductName', '')),
-                        'Barcode': str(record.get('Barcode', '')),
-                        'QuantityReceived': str(record.get('QuantityReceived', '')),
-                        'AcceptedDate': str(record.get('AcceptedDate', '')),
-                        'Vendor': vendor
-                    }
-                    
-                    # Get cell from current table
-                    cell = table.rows[idx].cells[0]
-                    
-                    # Clear any existing content
-                    for paragraph in cell.paragraphs:
-                        p = paragraph._element
-                        p.getparent().remove(p)
-                    
-                    # Add formatted content
-                    self._add_label(cell, record_data)
-                    
-                    # Verify cell content
-                    if not cell.text.strip():
-                        raise ValueError(f"Failed to add content for record {idx + 1} on page {current_page}")
-                    else:
-                        logger.info(f"Added content for record {idx + 1} on page {current_page} (Length: {len(cell.text)})")
+                for row_idx, record in enumerate(page_records):
+                    try:
+                        # Prepare cell data
+                        vendor = record.get('Vendor', 'Unknown')
+                        if ' - ' in vendor:
+                            vendor = vendor.split(' - ')[1]
+                        
+                        cell_data = {
+                            'ProductName': str(record.get('ProductName', '')),
+                            'Barcode': str(record.get('Barcode', '')),
+                            'QuantityReceived': str(record.get('QuantityReceived', '')),
+                            'AcceptedDate': str(record.get('AcceptedDate', '')),
+                            'Vendor': vendor
+                        }
+                        
+                        # Get cell and add content
+                        cell = table.rows[row_idx].cells[0]
+                        if self._add_label(cell, cell_data):
+                            records_processed += 1
+                            logger.info(f"Added label {records_processed} (Page {page_number}, Row {row_idx + 1})")
+                        else:
+                            logger.error(f"Failed to add label for record {records_processed + 1}")
+                            raise ValueError(f"Content creation failed for record {records_processed + 1}")
+                        
+                        # Verify cell content
+                        if not cell.text.strip():
+                            logger.error(f"Cell content verification failed for record {records_processed}")
+                            raise ValueError(f"Empty cell content for record {records_processed}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing record on page {page_number}, row {row_idx + 1}: {str(e)}")
+                        raise
                 
-                current_page += 1
-                    return True, None
+                page_number += 1
+            
+            # Final verification
+            if records_processed == 0:
+                raise ValueError("No records were processed successfully")
+                
+            logger.info(f"Document generation complete. Processed {records_processed} records across {page_number - 1} pages")
+            return True, None
+            
+        except Exception as e:
+            logger.error(f"Error generating document: {str(e)}")
+            return False, str(e)
+            return True, None
             
         except Exception as e:
             logger.error(f"Error generating document: {str(e)}")
             return False, str(e)
 
-                    # Do the replacements in all paragraphs and tables
-                    changed = False
+        # Do the replacements in all paragraphs and tables
+        changed = False
                     
                     # First, scan the document to find what placeholder format is actually used
-                    found_format = None
-                    format_samples = []
-                    
-                    def check_text_for_placeholders(text):
-                        nonlocal found_format
-                        for old_text in replacements.keys():
-                            if old_text in text:
-                                found_format = old_text
-                                format_samples.append(old_text)
-                                return True
-                        return False
-                    
-                    # Scan paragraphs and tables for placeholder format
-                    for paragraph in self.doc.paragraphs:
-                        check_text_for_placeholders(paragraph.text)
-                        
-                    for table in self.doc.tables:
-                        for row in table.rows:
-                            for cell in row.cells:
-                                check_text_for_placeholders(cell.text)
+            found_format = None
+            format_samples = []
+            
+            def check_text_for_placeholders(text):
+                nonlocal found_format
+                for old_text in replacements.keys():
+                    if old_text in text:
+                        found_format = old_text
+                        format_samples.append(old_text)
+                        return True
+                return False
+            
+            # Scan paragraphs and tables for placeholder format
+            for paragraph in self.doc.paragraphs:
+                check_text_for_placeholders(paragraph.text)
+                
+            for table in self.doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        check_text_for_placeholders(cell.text)
                     
                     if format_samples:
                         logger.info(f"Found placeholder format examples: {format_samples[:3]}")
@@ -603,14 +646,10 @@ class SimpleDocumentGenerator:
                                         if old_text in cell.text:
                                             self._replace_text_in_cell(cell, old_text, '')
             
-            # Calculate total pages needed
+            # Calculate total pages
             total_pages = (len(records) + 3) // 4  # Ceiling division by 4
-            current_page = 1
-            
-            logger.info(f"Will generate {total_pages} pages")
-            
+            logger.info(f"Generated {total_pages} pages")
             return True, None
-            
         except Exception as e:
             logger.error(f"Error generating document: {str(e)}")
             return False, str(e)
