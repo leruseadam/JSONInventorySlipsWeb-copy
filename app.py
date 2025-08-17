@@ -1654,14 +1654,27 @@ def generate_slips():
                     raise ValueError("No valid records to process")
                 
                 # Generate document with progress tracking
-                generator = SimpleDocumentGenerator()
+                # Log template location
+                template_path = os.path.join(get_webapp_dir(), 'templates', 'documents', 'InventorySlips.docx')
+                logger.info(f"Using template at: {template_path}")
+                if not os.path.exists(template_path):
+                    template_path = os.path.join(get_webapp_dir(), 'templates', 'InventorySlips.docx')
+                    logger.info(f"Trying alternate template path: {template_path}")
+                if not os.path.exists(template_path):
+                    raise ValueError(f"Template file not found in any location")
+                
+                generator = SimpleDocumentGenerator(template_path)
+                logger.info("Generating document...")
                 success, error = generator.generate_document(records)
                 
                 if success:
                     # Save with validation
+                    logger.info(f"Saving document to: {outpath}")
                     success, error = generator.save(outpath)
                     if success and os.path.exists(outpath):
+                        logger.info("Validating generated document...")
                         if validate_docx(outpath):
+                            logger.info("Document validation successful")
                             return outpath
                         else:
                             os.remove(outpath)

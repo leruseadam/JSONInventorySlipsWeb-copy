@@ -18,18 +18,23 @@ class TimeoutError(Exception):
 
 @contextmanager
 def timeout(seconds):
-    def handler(signum, frame):
-        raise TimeoutError(f"Operation timed out after {seconds} seconds")
-
-    # Register the signal function handler
-    signal.signal(signal.SIGALRM, handler)
-    signal.alarm(seconds)
+    """Cross-platform timeout context manager"""
+    # Check if SIGALRM is available (Unix-like systems)
+    has_sigalrm = hasattr(signal, 'SIGALRM')
     
+    if has_sigalrm:
+        def handler(signum, frame):
+            raise TimeoutError(f"Operation timed out after {seconds} seconds")
+            
+        old_handler = signal.signal(signal.SIGALRM, handler)
+        signal.alarm(seconds)
+        
     try:
         yield
     finally:
-        # Disable the alarm
-        signal.alarm(0)
+        if has_sigalrm:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
 
 class DocumentHandler:
     def __init__(self):
@@ -48,22 +53,67 @@ class DocumentHandler:
         gc.collect()  # Force garbage collection
 
     def create_document(self, template_path):
-        """Create document from template with timeout"""
-        if not os.path.exists(template_path):
-            raise ValueError(f"Template not found: {template_path}")
-            
-        try:
-            with timeout(30):  # 30 seconds timeout
-                temp_doc = Document(template_path)
-                # Save to temporary file to ensure template is valid
-                temp_path = os.path.join(tempfile.gettempdir(), f'temp_doc_{int(time.time())}.docx')
-                temp_doc.save(temp_path)
-                self.temp_files.append(temp_path)
+        """Create document from template with improved path resolution and validation"""
+        def try_alternate_paths(base_path):
+            # Get webapp root path
+            if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+                webapp_root = '/home/adamcordova/JSONInventorySlipsWeb-copy'
+            else:
+                webapp_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 
-                # Validate the temporary document
-                if not validate_docx(temp_path):
-                    raise ValueError("Template validation failed")
+            alternates = [
+                base_path,
+                os.path.join(webapp_root, "templates", "documents", "InventorySlips.docx"),
+                os.path.join(webapp_root, "templates", "InventorySlips.docx"),
+                os.path.join(os.path.dirname(base_path), "documents", "InventorySlips.docx"),
+                os.path.join(os.path.dirname(base_path), "templates", "documents", "InventorySlips.docx"),
+                os.path.join(os.path.dirname(base_path), "templates", "InventorySlips.docx")
+            ]
+            for path in alternates:
+                logger.info(f"Trying template path: {path}")
+                if os.path.exists(path):
+                    return path
+            return None
+
+        try:
+            # Try original path first
+            actual_path = try_alternate_paths(template_path)
+            if not actual_path:
+                raise ValueError(f"Template not found at any location starting from: {template_path}")
+
+            logger.info(f"Using template at: {actual_path}")
+            
+            with timeout(30):  # 30 seconds timeout
+                # Create document with proper error handling
+                try:
+                    temp_doc = Document(actual_path)
+                except Exception as e:
+                    logger.error(f"Error loading template: {e}")
+                    raise ValueError(f"Failed to load template: {e}")
+                
+                # Save to temporary file for validation
+                temp_dir = tempfile.gettempdir()
+                # Create a subdirectory with proper permissions
+                if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+                    temp_dir = os.path.join(temp_dir, 'inventory_generator')
+                    os.makedirs(temp_dir, mode=0o755, exist_ok=True)
                     
+                temp_path = os.path.join(temp_dir, f'temp_doc_{int(time.time())}.docx')
+                logger.info(f"Saving temporary copy to: {temp_path}")
+                try:
+                    temp_doc.save(temp_path)
+                    # Set file permissions
+                    os.chmod(temp_path, 0o644)
+                    self.temp_files.append(temp_path)
+                except Exception as e:
+                    logger.error(f"Error saving temporary document: {e}")
+                    raise ValueError(f"Failed to save temporary document: {e}")
+                
+                # Validate with relaxed settings for template
+                if not validate_docx(temp_path):
+                    logger.error("Template validation failed")
+                    raise ValueError("Template validation failed")
+                
                 self.doc = temp_doc
                 return self.doc
                 
@@ -153,14 +203,24 @@ class DocumentHandler:
             return False
 
     def save_document(self, filepath):
-        """Save document with validation"""
+        """Save document with validation and proper permissions"""
         try:
             with timeout(30):  # 30 seconds timeout
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                # First save to temporary file
-                temp_path = os.path.join(tempfile.gettempdir(), f'final_doc_{int(time.time())}.docx')
+                # Create output directory with proper permissions
+                output_dir = os.path.dirname(filepath)
+                os.makedirs(output_dir, mode=0o755, exist_ok=True)
+                
+                # Save to a temporary directory with known good permissions
+                temp_dir = os.path.join(tempfile.gettempdir(), 'inventory_generator')
+                os.makedirs(temp_dir, mode=0o755, exist_ok=True)
+                temp_path = os.path.join(temp_dir, f'final_doc_{int(time.time())}.docx')
                 self.temp_files.append(temp_path)
+                
+                # Save document
+                logger.info(f"Saving document to temporary path: {temp_path}")
                 self.doc.save(temp_path)
+                # Set temporary file permissions
+                os.chmod(temp_path, 0o644)
                 
                 # Validate the document
                 if not validate_docx(temp_path):
