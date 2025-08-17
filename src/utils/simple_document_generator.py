@@ -239,16 +239,7 @@ class SimpleDocumentGenerator:
                             logger.debug(f"Successfully replaced '{variant}' with '{new_text}'")
                             break
                     
-                    # Replace text
-                    run.text = run.text.replace(old_text, str(new_text))
-                    
-                    # Reapply formatting
-                    run.font.size = original_size or Pt(11)  # Default to 11pt if not set
-                    run.font.name = original_name or 'Arial'  # Default to Arial if not set
-                    run.bold = original_bold
-                    run.italic = original_italic
-                    
-                    logger.debug(f"Replaced placeholder with '{new_text}' and preserved formatting")
+                        logger.debug(f"Replaced placeholder with '{new_text}' and preserved formatting")
 
     def _replace_text_in_cell(self, cell, old_text, new_text):
         """Safely replace text in a table cell with content verification"""
@@ -357,15 +348,27 @@ class SimpleDocumentGenerator:
                                 self._replace_placeholder_text(paragraph, old_text, new_text)
                                 changed = True
 
-                    # Replace in tables
+                    # Replace in tables with support for all formats
                     for table in self.doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
+                                cell_text = cell.text
+                                found_placeholder = False
                                 for old_text, new_text in replacements.items():
-                                    if old_text in cell.text:
-                                        logger.debug(f"Replacing {old_text} with {new_text} in table cell")
-                                        self._replace_text_in_cell(cell, old_text, new_text)
-                                        changed = True
+                                    # Check all variations of the placeholder format
+                                    placeholder_variants = [
+                                        old_text,  # Original format with dots
+                                        old_text.replace('.', ''),  # No dots
+                                        old_text.replace('.', ' ')  # Spaces instead of dots
+                                    ]
+                                    for variant in placeholder_variants:
+                                        if variant in cell_text:
+                                            logger.debug(f"Replacing {variant} with {new_text} in table cell")
+                                            self._replace_text_in_cell(cell, variant, new_text)
+                                            found_placeholder = True
+                                            changed = True
+                                if found_placeholder:
+                                    logger.debug(f"Updated cell content: {cell.text[:50]}")
 
                     if not changed:
                         logger.warning(f"No replacements made for record {idx} on page {page_num + 1}")
@@ -398,84 +401,6 @@ class SimpleDocumentGenerator:
             
             logger.info(f"Will generate {total_pages} pages")
             
-            # Process records in groups of 4
-            for i in range(0, len(records), 4):
-                page_records = records[i:i + 4]
-                
-                if i > 0:
-                    self.doc.add_page_break()
-                
-                    # Replace placeholders for each record
-                    for idx, record in enumerate(page_records, 1):
-                        vendor = record.get('Vendor', 'Unknown')
-                        if ' - ' in vendor:  # Clean up vendor name if it has license
-                            vendor = vendor.split(' - ')[1]
-                            
-                        # Define all possible placeholder formats
-                        replacements = {}
-                        
-                        # Original format
-                        replacements.update({
-                            f'{{{{Label{idx}.AcceptedDate}}}}': record.get('AcceptedDate', ''),
-                            f'{{{{Label{idx}.Vendor}}}}': vendor,
-                            f'{{{{Label{idx}.ProductName}}}}': record.get('ProductName', ''),
-                            f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode', ''),
-                            f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
-                        })
-                        
-                        # Direct format (no dots)
-                        replacements.update({
-                            f'{{Label{idx}AcceptedDate}}': record.get('AcceptedDate', ''),
-                            f'{{Label{idx}Vendor}}': vendor,
-                            f'{{Label{idx}ProductName}}': record.get('ProductName', ''),
-                            f'{{Label{idx}Barcode}}': record.get('Barcode', ''),
-                            f'{{Label{idx}QuantityReceived}}': str(record.get('QuantityReceived', '')),
-                        })
-                        
-                        # Legacy format with spaces
-                        replacements.update({
-                            f'{{Label{idx} AcceptedDate}}': record.get('AcceptedDate', ''),
-                            f'{{Label{idx} Vendor}}': vendor,
-                            f'{{Label{idx} ProductName}}': record.get('ProductName', ''),
-                            f'{{Label{idx} Barcode}}': record.get('Barcode', ''),
-                            f'{{Label{idx} QuantityReceived}}': str(record.get('QuantityReceived', '')),
-                        })
-                        
-                        logger.info(f"Replacing placeholders for record {idx}: {list(replacements.keys())}")                    # Replace in paragraphs
-                    for paragraph in self.doc.paragraphs:
-                        for old_text, new_text in replacements.items():
-                            self._replace_placeholder_text(paragraph, old_text, new_text)
-                    
-                    # Replace in tables
-                    for table in self.doc.tables:
-                        for row in table.rows:
-                            for cell in row.cells:
-                                for old_text, new_text in replacements.items():
-                                    self._replace_text_in_cell(cell, old_text, new_text)
-                
-                # Clear unused labels on the last page
-                if i + 4 > len(records):
-                    for idx in range(len(page_records) + 1, 5):
-                        empty_replacements = {
-                            f'{{{{Label{idx}.AcceptedDate}}}}': '',
-                            f'{{{{Label{idx}.Vendor}}}}': '',
-                            f'{{{{Label{idx}.ProductName}}}}': '',
-                            f'{{{{Label{idx}.Barcode}}}}': '',
-                            f'{{{{Label{idx}.QuantityReceived}}}}': '',
-                        }
-                        
-                        # Clear in paragraphs
-                        for paragraph in self.doc.paragraphs:
-                            for old_text, new_text in empty_replacements.items():
-                                self._replace_placeholder_text(paragraph, old_text, '')
-                        
-                        # Clear in tables
-                        for table in self.doc.tables:
-                            for row in table.rows:
-                                for cell in row.cells:
-                                    for old_text, new_text in empty_replacements.items():
-                                        self._replace_text_in_cell(cell, old_text, '')
-                
             return True, None
             
         except Exception as e:
