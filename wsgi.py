@@ -4,8 +4,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 import traceback
 
-# Configure paths
-WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
+# Configure paths for both local and PythonAnywhere environments
+if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+    # PythonAnywhere path
+    WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'
+else:
+    # Local development path
+    WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
+
 LOG_PATH = os.path.join(WEBAPP_PATH, 'logs')
 
 # Create logs directory if it doesn't exist
