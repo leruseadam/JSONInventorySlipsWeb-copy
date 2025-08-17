@@ -16,18 +16,34 @@ from xml.etree import ElementTree as ET
 logger = logging.getLogger(__name__)
 
 class SimpleDocumentGenerator:
-    def __init__(self):
+    def __init__(self, template_path=None):
         self.doc = None
+        self.template_path = template_path
         
     def _load_template(self):
         """Load the exact inventory slip template"""
-        # Try multiple template locations
+        
+        # If template_path was provided in __init__, try it first
+        if self.template_path and os.path.exists(self.template_path):
+            logger.info(f"Using provided template path: {self.template_path}")
+            try:
+                with zipfile.ZipFile(self.template_path) as docx:
+                    with docx.open('word/document.xml') as xml_content:
+                        xml_str = xml_content.read().decode('utf-8')
+                        if "{{Label1" in xml_str:
+                            self.doc = Document(self.template_path)
+                            return
+            except Exception as e:
+                logger.warning(f"Could not use provided template: {str(e)}")
+        
+        # Try multiple template locations as fallback
         base_paths = [
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # From src/utils
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),  # From project root
             os.path.join(os.path.expanduser('~'), 'Desktop', 'JSONInventorySlipsWeb-copy'),  # From desktop
             os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb-copy'),  # From home
-            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb')  # From home without -copy
+            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb'),  # From home without -copy
+            '/home/adamcordova/JSONInventorySlipsWeb-copy'  # PythonAnywhere path
         ]
         
         potential_paths = []
