@@ -13,6 +13,7 @@ import base64
 import hmac
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler
 import threading
 import tempfile
 import urllib.request
@@ -190,8 +191,25 @@ def get_chunked_data(key):
         return None
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+    LOG_PATH = os.path.join('/home/adamcordova/JSONInventorySlipsWeb-copy/logs')
+else:
+    LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+os.makedirs(LOG_PATH, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler(
+            os.path.join(LOG_PATH, 'app.log'),
+            maxBytes=5*1024*1024,  # 5MB
+            backupCount=3
+        )
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -1551,18 +1569,23 @@ def generate_slips():
         
         # Convert JSON to DataFrame with memory management
         try:
+            # Handle both list and string JSON formats
             if isinstance(df_json, list):
-                # Process in chunks if large dataset
-                chunk_size = 1000
-                if len(df_json) > chunk_size:
-                    chunks = [df_json[i:i + chunk_size] for i in range(0, len(df_json), chunk_size)]
-                    df = pd.concat([pd.DataFrame(chunk) for chunk in chunks])
-                else:
-                    df = pd.DataFrame(df_json)
+                df = pd.DataFrame(df_json)
             else:
-                from io import StringIO
-                df = pd.read_json(StringIO(df_json), orient='records', chunksize=1000)
-                df = pd.concat(df)
+                try:
+                    from io import StringIO
+                    df = pd.read_json(StringIO(df_json), orient='records')
+                except Exception as e:
+                    logger.error(f"Failed to parse JSON data: {str(e)}")
+                    # Try parsing as string
+                    import json
+                    try:
+                        parsed_data = json.loads(df_json)
+                        df = pd.DataFrame(parsed_data)
+                    except Exception as e2:
+                        logger.error(f"Failed to parse JSON string: {str(e2)}")
+                        raise ValueError("Could not parse data format")
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             return jsonify({'error': 'Error loading data. Please try again.'}), 500
