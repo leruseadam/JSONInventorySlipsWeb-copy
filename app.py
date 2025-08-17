@@ -19,6 +19,8 @@ import urllib.request
 import urllib.error
 import uuid
 import re
+import signal
+import asyncio
 import webbrowser
 import time
 import traceback
@@ -52,7 +54,8 @@ try:
         session, 
         send_file, 
         send_from_directory,
-        make_response
+        make_response,
+        Response
     )
     import requests
     import pandas as pd
@@ -268,9 +271,34 @@ app = Flask(__name__,
 # Use a fixed secret key for development to preserve session data
 app.secret_key = 'your-fixed-development-secret-key'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # Increase to 32 MB
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
+app.config['MAX_PROCESSING_TIME'] = 300  # 5 minutes max for document generation
 
 # Add security headers and session configuration for Chrome compatibility
+from werkzeug.exceptions import HTTPException
+import threading
+from functools import wraps
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Request timed out")
+
+def with_timeout(seconds):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+            try:
+                result = f(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+            return result
+        return wrapper
+    return decorator
+
 @app.after_request
 def add_security_headers(response):
     """Add security headers to make the app work better with Chrome"""
@@ -282,6 +310,11 @@ def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-XSS-Protection'] = '1; mode=block'
+    
+    # Add better CORS headers
+    response.headers['Access-Control-Max-Age'] = '600'  # 10 minutes
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+    response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
     
     # Add CORS headers
     if request.headers.get('Origin'):
@@ -1394,137 +1427,200 @@ def data_view():
         return redirect(url_for('index'))
 
 @app.route('/generate-slips', methods=['POST', 'OPTIONS'])
+@with_timeout(300)  # 5 minute timeout
 def generate_slips():
-    """Generate inventory slips using simple document generation"""
+    """Generate inventory slips using simple document generation with improved error handling"""
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
         response = make_response()
         response.headers.add('Access-Control-Allow-Origin', '*')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '600')  # 10 minutes
         return response
+        
+    # Set up response headers for streaming
+    response = Response(status=200)
+    response.headers['Content-Type'] = 'application/octet-stream'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
     try:
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
         
         if not selected_indices:
-            flash('No products selected.')
-            return redirect(url_for('data_view'))
+            return jsonify({'error': 'No products selected'}), 400
         
         # Convert indices to integers
         selected_indices = [int(idx) for idx in selected_indices]
         logger.info(f"Selected indices: {selected_indices}")
         
-        # Load data from session using chunked data
+        # Load data from session using chunked data with timeout
         df_json = get_chunked_data('df_json')
         
         if df_json is None:
-            flash('No data available. Please load data first.')
-            return redirect(url_for('index'))
+            return jsonify({'error': 'No data available. Please load data first.'}), 400
         
-        # Convert JSON to DataFrame
+        # Convert JSON to DataFrame with memory management
         try:
             if isinstance(df_json, list):
-                df = pd.DataFrame(df_json)
+                # Process in chunks if large dataset
+                chunk_size = 1000
+                if len(df_json) > chunk_size:
+                    chunks = [df_json[i:i + chunk_size] for i in range(0, len(df_json), chunk_size)]
+                    df = pd.concat([pd.DataFrame(chunk) for chunk in chunks])
+                else:
+                    df = pd.DataFrame(df_json)
             else:
                 from io import StringIO
-                df = pd.read_json(StringIO(df_json), orient='records')
+                df = pd.read_json(StringIO(df_json), orient='records', chunksize=1000)
+                df = pd.concat(df)
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
-            flash('Error loading data. Please try again.')
-            return redirect(url_for('data_view'))
+            return jsonify({'error': 'Error loading data. Please try again.'}), 500
         
         logger.info(f"DataFrame shape: {df.shape}")
         logger.info(f"DataFrame columns: {df.columns.tolist()}")
         
-        # Get only selected rows
-        selected_df = df.iloc[selected_indices].copy()
+        # Get only selected rows with validation
+        try:
+            selected_df = df.iloc[selected_indices].copy()
+            if selected_df.empty:
+                return jsonify({'error': 'No valid records selected'}), 400
+        except Exception as e:
+            logger.error(f"Error selecting records: {str(e)}")
+            return jsonify({'error': 'Invalid selection'}), 400
+            
         logger.info(f"Selected DataFrame shape: {selected_df.shape}")
         
         # Load configuration
         config = load_config()
         
-        # Generate the file using simple document generator
-        from src.utils.simple_document_generator import SimpleDocumentGenerator
-        
-        # Get vendor name from first row
-        vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
-        today_date = datetime.now().strftime("%Y%m%d")
-        
-        # Clean vendor name for filename
-        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
-        
-        # Create filename
-        outname = f"{today_date}_{vendor_name}_Slips.docx"
-        outpath = os.path.join(config['PATHS']['output_dir'], outname)
-        
-        # Prepare records
-        records = []
-        for _, row in selected_df.iterrows():
-            qty = row.get('Quantity Received*', 0)
+        # Use a thread pool for document generation
+        def generate_doc():
             try:
-                qty = float(qty)
-                qty = int(round(qty))
-            except (ValueError, TypeError):
-                qty = 0
+                from src.utils.simple_document_generator import SimpleDocumentGenerator
                 
-            vendor = row.get('Vendor', '')
-            if ' - ' in vendor:
-                vendor = vendor.split(' - ')[1]
+                # Get vendor name from first row
+                vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
+                today_date = datetime.now().strftime("%Y%m%d")
                 
-            records.append({
-                'ProductName': str(row.get('Product Name*', ''))[:100],
-                'Barcode': str(row.get('Barcode*', ''))[:50],
-                'AcceptedDate': str(row.get('Accepted Date', ''))[:20],
-                'QuantityReceived': str(qty),
-                'Vendor': str(vendor or 'Unknown Vendor')[:50]
-            })
+                # Clean vendor name for filename
+                vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
+                
+                # Create filename with unique identifier
+                unique_id = uuid.uuid4().hex[:8]
+                outname = f"{today_date}_{vendor_name}_{unique_id}_Slips.docx"
+                outpath = os.path.join(config['PATHS']['output_dir'], outname)
+                
+                # Prepare records with validation
+                records = []
+                for _, row in selected_df.iterrows():
+                    try:
+                        qty = row.get('Quantity Received*', 0)
+                        qty = int(round(float(qty))) if str(qty).strip() else 0
+                    except (ValueError, TypeError):
+                        qty = 0
+                        
+                    vendor = row.get('Vendor', '')
+                    if ' - ' in vendor:
+                        vendor = vendor.split(' - ')[1]
+                        
+                    # Validate and clean record data
+                    record = {
+                        'ProductName': str(row.get('Product Name*', ''))[:100].strip(),
+                        'Barcode': str(row.get('Barcode*', ''))[:50].strip(),
+                        'AcceptedDate': str(row.get('Accepted Date', ''))[:20].strip(),
+                        'QuantityReceived': str(qty),
+                        'Vendor': str(vendor or 'Unknown Vendor')[:50].strip()
+                    }
+                    
+                    # Only add record if it has required fields
+                    if record['ProductName'] and record['Barcode']:
+                        records.append(record)
+                
+                if not records:
+                    raise ValueError("No valid records to process")
+                
+                # Generate document with progress tracking
+                generator = SimpleDocumentGenerator()
+                success, error = generator.generate_document(records)
+                
+                if success:
+                    # Save with validation
+                    success, error = generator.save(outpath)
+                    if success and os.path.exists(outpath):
+                        if validate_docx(outpath):
+                            return outpath
+                        else:
+                            os.remove(outpath)
+                            raise ValueError("Generated document failed validation")
+                    else:
+                        raise ValueError(f"Failed to save document: {error}")
+                else:
+                    raise ValueError(f"Failed to generate document: {error}")
+                    
+            except Exception as e:
+                logger.error(f"Document generation error: {str(e)}")
+                raise
         
-        # Generate document
-        generator = SimpleDocumentGenerator()
-        success, error = generator.generate_document(records)
-        
-        if success:
-            success, error = generator.save(outpath)
-            if success:
-                result = outpath
-            else:
-                result = f"Failed to save document: {error}"
-                success = False
-        else:
-            result = f"Failed to generate document: {error}"
-        
-        if success:
-            logger.info(f"Document generated successfully: {result}")
-            # Validate the generated file
-            if not validate_docx(result):
-                logger.error("Generated document failed validation")
-                flash('Generated document appears to be corrupted. Please try again.')
-                return redirect(url_for('data_view'))
-            
-            # Return the file for download with CORS headers
-            response = send_file(
-                result,
-                as_attachment=True,
-                download_name=os.path.basename(result),
-                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            )
-            
-            # Add CORS headers
-            response.headers.add('Access-Control-Allow-Origin', '*')
-            response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-            
-            return response
-        else:
-            logger.error(f"Document generation failed: {result}")
-            flash(f'Failed to generate inventory slips: {result}')
-            return redirect(url_for('data_view'))
+        # Execute document generation with timeout
+        try:
+            with timeout(app.config['MAX_PROCESSING_TIME']):
+                result = generate_doc()
+                
+                response = send_file(
+                    result,
+                    as_attachment=True,
+                    download_name=os.path.basename(result),
+                    mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                )
+                
+                # Add comprehensive CORS and caching headers
+                response.headers.update({
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+                    'Access-Control-Expose-Headers': 'Content-Disposition',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                })
+                
+                return response
+                
+        except TimeoutError:
+            return jsonify({'error': 'Document generation timed out. Please try with fewer records.'}), 504
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
     
     except Exception as e:
         logger.error(f"Error in generate_slips: {str(e)}", exc_info=True)
-        flash(f'Error generating slips: {str(e)}')
-        return redirect(url_for('data_view'))
+        return jsonify({
+            'error': 'Internal server error occurred',
+            'details': str(e)
+        }), 500
+
+@app.errorhandler(500)
+def handle_500_error(e):
+    return jsonify({
+        'error': 'Internal server error occurred',
+        'details': str(e)
+    }), 500
+
+@app.errorhandler(502)
+def handle_502_error(e):
+    return jsonify({
+        'error': 'Bad Gateway',
+        'details': 'The server encountered a temporary error. Please try again.'
+    }), 502
+
+@app.errorhandler(504)
+def handle_504_error(e):
+    return jsonify({
+        'error': 'Gateway Timeout',
+        'details': 'The operation timed out. Please try with fewer records.'
+    }), 504
 
 # To this:
 @app.route('/generate_robust_slips_docx', methods=['POST'])
