@@ -26,7 +26,8 @@ class SimpleDocumentGenerator:
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # From src/utils
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),  # From project root
             os.path.join(os.path.expanduser('~'), 'Desktop', 'JSONInventorySlipsWeb-copy'),  # From desktop
-            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb-copy')  # From home
+            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb-copy'),  # From home
+            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb')  # From home without -copy
         ]
         
         potential_paths = []
@@ -146,6 +147,21 @@ class SimpleDocumentGenerator:
         p = cell.add_paragraph()
         p.add_run().add_break()
         
+    def _replace_placeholder_text(self, paragraph, old_text, new_text):
+        """Safely replace placeholder text in a paragraph"""
+        if old_text in paragraph.text:
+            # Get all text runs
+            runs = paragraph.runs
+            for run in runs:
+                if old_text in run.text:
+                    # Replace text while preserving formatting
+                    run.text = run.text.replace(old_text, str(new_text))
+
+    def _replace_text_in_cell(self, cell, old_text, new_text):
+        """Safely replace text in a table cell"""
+        for paragraph in cell.paragraphs:
+            self._replace_placeholder_text(paragraph, old_text, new_text)
+
     def generate_document(self, records):
         """Generate document using the exact template"""
         try:
@@ -189,23 +205,17 @@ class SimpleDocumentGenerator:
                         f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
                     }
                     
-                    # Replace in all paragraphs and tables
+                    # Replace in paragraphs
                     for paragraph in self.doc.paragraphs:
-                        text = paragraph._element.xml
                         for old_text, new_text in replacements.items():
-                            if old_text in text:
-                                text = text.replace(old_text, str(new_text))
-                        paragraph._element.xml = text
+                            self._replace_placeholder_text(paragraph, old_text, new_text)
                     
+                    # Replace in tables
                     for table in self.doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
-                                for paragraph in cell.paragraphs:
-                                    text = paragraph._element.xml
-                                    for old_text, new_text in replacements.items():
-                                        if old_text in text:
-                                            text = text.replace(old_text, str(new_text))
-                                    paragraph._element.xml = text
+                                for old_text, new_text in replacements.items():
+                                    self._replace_text_in_cell(cell, old_text, new_text)
                 
                 # Clear unused labels on the last page
                 if i + 4 > len(records):
@@ -217,22 +227,18 @@ class SimpleDocumentGenerator:
                             f'{{{{Label{idx}.Barcode}}}}': '',
                             f'{{{{Label{idx}.QuantityReceived}}}}': '',
                         }
-                        for paragraph in self.doc.paragraphs:
-                            text = paragraph._element.xml
-                            for old_text, new_text in empty_replacements.items():
-                                if old_text in text:
-                                    text = text.replace(old_text, '')
-                            paragraph._element.xml = text
                         
+                        # Clear in paragraphs
+                        for paragraph in self.doc.paragraphs:
+                            for old_text, new_text in empty_replacements.items():
+                                self._replace_placeholder_text(paragraph, old_text, '')
+                        
+                        # Clear in tables
                         for table in self.doc.tables:
                             for row in table.rows:
                                 for cell in row.cells:
-                                    for paragraph in cell.paragraphs:
-                                        text = paragraph._element.xml
-                                        for old_text, new_text in empty_replacements.items():
-                                            if old_text in text:
-                                                text = text.replace(old_text, '')
-                                        paragraph._element.xml = text
+                                    for old_text, new_text in empty_replacements.items():
+                                        self._replace_text_in_cell(cell, old_text, '')
                 
             return True, None
             
@@ -241,25 +247,64 @@ class SimpleDocumentGenerator:
             return False, str(e)
             
     def save(self, filepath):
-        """Save the document"""
+        """Save the document with validation and error handling"""
+        temp_path = None
         try:
             # Ensure directory exists
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             
-            # Save document
-            self.doc.save(filepath)
+            # Create temp file first
+            temp_path = f"{filepath}.tmp"
+            self.doc.save(temp_path)
             
-            # Verify the file exists and is readable
-            if not os.path.exists(filepath):
-                return False, "Failed to create document file"
+            # Verify the temp file
+            try:
+                test_doc = Document(temp_path)
+                if not test_doc.paragraphs and not test_doc.tables:
+                    raise ValueError("Generated document appears to be empty")
+                    
+                # Additional validation
+                found_content = False
+                for paragraph in test_doc.paragraphs:
+                    if paragraph.text.strip():
+                        found_content = True
+                        break
+                if not found_content:
+                    for table in test_doc.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                if cell.text.strip():
+                                    found_content = True
+                                    break
+                            if found_content:
+                                break
+                        if found_content:
+                            break
                 
-            # Try to open the file to verify it's not corrupted
-            test_doc = Document(filepath)
-            if not test_doc.tables:
-                return False, "Generated document appears to be invalid"
+                if not found_content:
+                    raise ValueError("Generated document contains no text content")
+                    
+            except Exception as e:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise ValueError(f"Document validation failed: {str(e)}")
+                
+            # Move temp file to final location
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            os.rename(temp_path, filepath)
+            
+            # Final verification
+            if not os.path.exists(filepath):
+                raise ValueError("Failed to move document to final location")
                 
             return True, None
             
         except Exception as e:
             logger.error(f"Error saving document: {str(e)}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             return False, str(e)
