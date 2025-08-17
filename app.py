@@ -194,10 +194,14 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 # Constants
-CONFIG_FILE = os.path.expanduser("~/inventory_generator_config.ini")
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+
+def get_webapp_dir():
+    """Get the absolute path to the webapp directory"""
+    return os.path.dirname(os.path.abspath(__file__))
 
 def get_downloads_dir():
-    """Get the default Downloads directory for both Windows and Mac"""
+    """Get the default downloads directory or webapp/downloads"""
     try:
         if sys.platform == "win32":
             # First try Windows known folder path
@@ -343,19 +347,23 @@ app.config.update(
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    """Get absolute path to resource, works for dev, PyInstaller and PythonAnywhere"""
+    base_path = get_webapp_dir()
+    return os.path.join(base_path, relative_path)
 
 # Load configurations or create default
 def load_config():
     config = configparser.ConfigParser()
+    webapp_dir = get_webapp_dir()
     
-    # Default configurations
+    # Default configurations with webapp_dir interpolation
+    config['DEFAULT'] = {
+        'webapp_dir': webapp_dir
+    }
+    
     config['PATHS'] = {
-        'template_path': os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx"),
-        'output_dir': DEFAULT_SAVE_DIR,  # Use the new DEFAULT_SAVE_DIR
+        'template_path': '%(webapp_dir)s/templates/documents/InventorySlips.docx',
+        'output_dir': os.path.join(webapp_dir, 'downloads'),
         'recent_files': '',
         'recent_urls': ''
     }
@@ -367,13 +375,39 @@ def load_config():
         'font_size': '12'
     }
     
-    # Load existing config if it exists
-    if os.path.exists(CONFIG_FILE):
-        config.read(CONFIG_FILE)
-    else:
-        # Create config file with defaults
+    try:
+        # Load existing config if it exists
+        if os.path.exists(CONFIG_FILE):
+            config.read(CONFIG_FILE)
+        
+        # Ensure output directory exists
+        os.makedirs(config['PATHS']['output_dir'], exist_ok=True)
+        
+        # Validate template path
+        template_path = config['PATHS']['template_path']
+        if not os.path.exists(template_path):
+            logger.warning(f"Template not found at {template_path}, checking alternate locations")
+            # Try alternate locations
+            alternates = [
+                os.path.join(webapp_dir, 'templates', 'documents', 'InventorySlips.docx'),
+                os.path.join(webapp_dir, 'templates', 'InventorySlips.docx'),
+                os.path.join(webapp_dir, 'InventorySlips.docx')
+            ]
+            for alt_path in alternates:
+                if os.path.exists(alt_path):
+                    config['PATHS']['template_path'] = alt_path
+                    logger.info(f"Found template at alternate location: {alt_path}")
+                    break
+            else:
+                logger.error("Could not find template file in any location")
+        
+        # Save any updates
         with open(CONFIG_FILE, 'w') as f:
             config.write(f)
+            
+    except Exception as e:
+        logger.error(f"Error loading configuration: {str(e)}")
+        # Use defaults if config loading fails
     
     return config
 
@@ -1425,6 +1459,26 @@ def data_view():
         logger.error(f'Error in data_view: {str(e)}', exc_info=True)
         flash('Error loading data. Please try again.')
         return redirect(url_for('index'))
+
+class timeout:
+    """Context manager for timeout"""
+    def __init__(self, seconds):
+        self.seconds = seconds
+        
+    def __enter__(self):
+        def handler(signum, frame):
+            raise TimeoutError("Operation timed out")
+        
+        # Handle timeouts on Unix systems
+        if hasattr(signal, 'SIGALRM'):
+            self.old_handler = signal.signal(signal.SIGALRM, handler)
+            signal.alarm(self.seconds)
+        
+    def __exit__(self, type, value, traceback):
+        # Restore signal handling
+        if hasattr(signal, 'SIGALRM'):
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, self.old_handler)
 
 @app.route('/generate-slips', methods=['POST', 'OPTIONS'])
 @with_timeout(300)  # 5 minute timeout
