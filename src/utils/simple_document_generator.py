@@ -253,38 +253,52 @@ class SimpleDocumentGenerator:
     def _replace_text_in_cell(self, cell, old_text, new_text):
         """Safely replace text in a table cell with content verification"""
         try:
+            # Store original content
             had_content = bool(cell.text.strip())
             original_text = cell.text
             
-            # Replace in existing paragraphs
-            for paragraph in cell.paragraphs:
-                self._replace_placeholder_text(paragraph, old_text, new_text)
+            logger.debug(f"Cell original text: {original_text[:50]}...")
+            logger.debug(f"Looking for: {old_text} to replace with: {new_text}")
             
-            # Verify content was replaced
-            if had_content and old_text in original_text:
-                # If we had content but replacement failed, try direct approach
-                if not cell.text.strip():
-                    logger.warning(f"Cell content was lost during replacement. Attempting direct replacement.")
-                    # Clear cell
-                    cell._element.clear_content()
-                    # Add new paragraph with content
-                    p = cell.add_paragraph()
-                    run = p.add_run(new_text)
-                    run.font.name = 'Arial'
-                    run.font.size = Pt(11)
-                    
-            # Verify the cell has proper structure
+            # Method 1: Try replacing in existing paragraphs
+            for paragraph in cell.paragraphs:
+                if old_text in paragraph.text:
+                    logger.debug("Found placeholder in paragraph, replacing...")
+                    self._replace_placeholder_text(paragraph, old_text, new_text)
+            
+            # Method 2: If that didn't work and we need to replace something, try direct replacement
+            if old_text in original_text and old_text in cell.text:
+                logger.debug("Using direct cell replacement...")
+                # Store original formatting
+                first_p = cell.paragraphs[0] if cell.paragraphs else None
+                original_font = None
+                original_size = None
+                if first_p and first_p.runs:
+                    original_font = first_p.runs[0].font.name
+                    original_size = first_p.runs[0].font.size
+                
+                # Clear and replace content
+                cell._element.clear_content()
+                p = cell.add_paragraph()
+                run = p.add_run(original_text.replace(old_text, new_text))
+                run.font.name = original_font or 'Arial'
+                run.font.size = original_size or Pt(11)
+                
+            # Verify we still have proper structure
             if not cell.paragraphs:
                 cell.add_paragraph()
-                
-            logger.debug(f"Cell content after replacement: '{cell.text[:50]}...'")
+            
+            logger.debug(f"Final cell content: {cell.text[:50]}...")
+            
         except Exception as e:
             logger.error(f"Error replacing text in cell: {str(e)}")
-            # Try to recover
             try:
-                cell.text = str(new_text)
-            except:
-                logger.error("Could not recover cell content")
+                # Last resort: direct text replacement
+                current_text = cell.text
+                if old_text in current_text:
+                    cell.text = current_text.replace(old_text, new_text)
+            except Exception as e2:
+                logger.error(f"Could not recover cell content: {str(e2)}")
 
     def generate_document(self, records):
         """Generate document using the exact template"""
@@ -294,13 +308,89 @@ class SimpleDocumentGenerator:
 
             logger.info("Starting document generation...")
             logger.info(f"Number of records to process: {len(records)}")
+            logger.debug(f"First record sample: {records[0] if records else 'No records'}")
 
-            # Load the template for each new document
-            try:
+            # Load and validate template
+            if not self.doc:
                 self._load_template()
-            except Exception as e:
-                logger.error(f"Failed to load template: {str(e)}")
-                return False, f"Template error: {str(e)}"
+                if not self.doc:
+                    raise ValueError("Template failed to load properly")
+
+            # Process records in groups of 4 (for 4 cells per page layout)
+            total_pages = (len(records) + 3) // 4
+            logger.info(f"Will generate {total_pages} pages")
+
+            # Process each page
+            for page_num in range(total_pages):
+                start_idx = page_num * 4
+                page_records = records[start_idx:start_idx + 4]
+                
+                # Add page break between pages
+                if page_num > 0:
+                    self.doc.add_page_break()
+                
+                # Replace placeholders for each record on this page
+                for idx, record in enumerate(page_records, 1):
+                    logger.info(f"Processing record {idx} on page {page_num + 1}")
+                    
+                    # Clean up vendor name if needed
+                    vendor = record.get('Vendor', 'Unknown')
+                    if ' - ' in vendor:
+                        vendor = vendor.split(' - ')[1]
+                    
+                    # Define replacements
+                    replacements = {
+                        f'{{{{Label{idx}.AcceptedDate}}}}': str(record.get('AcceptedDate', '')),
+                        f'{{{{Label{idx}.Vendor}}}}': vendor,
+                        f'{{{{Label{idx}.ProductName}}}}': str(record.get('ProductName', '')),
+                        f'{{{{Label{idx}.Barcode}}}}': str(record.get('Barcode', '')),
+                        f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
+                    }
+
+                    # Do the replacements in all paragraphs and tables
+                    changed = False
+                    # Replace in paragraphs
+                    for paragraph in self.doc.paragraphs:
+                        for old_text, new_text in replacements.items():
+                            if old_text in paragraph.text:
+                                logger.debug(f"Replacing {old_text} with {new_text}")
+                                self._replace_placeholder_text(paragraph, old_text, new_text)
+                                changed = True
+
+                    # Replace in tables
+                    for table in self.doc.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                for old_text, new_text in replacements.items():
+                                    if old_text in cell.text:
+                                        logger.debug(f"Replacing {old_text} with {new_text} in table cell")
+                                        self._replace_text_in_cell(cell, old_text, new_text)
+                                        changed = True
+
+                    if not changed:
+                        logger.warning(f"No replacements made for record {idx} on page {page_num + 1}")
+
+                # Clear unused placeholders on the last page
+                if page_num == total_pages - 1:
+                    for idx in range(len(page_records) + 1, 5):
+                        empty_replacements = {
+                            f'{{{{Label{idx}.AcceptedDate}}}}': '',
+                            f'{{{{Label{idx}.Vendor}}}}': '',
+                            f'{{{{Label{idx}.ProductName}}}}': '',
+                            f'{{{{Label{idx}.Barcode}}}}': '',
+                            f'{{{{Label{idx}.QuantityReceived}}}}': '',
+                        }
+                        # Clear in all document elements
+                        for paragraph in self.doc.paragraphs:
+                            for old_text in empty_replacements:
+                                if old_text in paragraph.text:
+                                    self._replace_placeholder_text(paragraph, old_text, '')
+                        for table in self.doc.tables:
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    for old_text in empty_replacements:
+                                        if old_text in cell.text:
+                                            self._replace_text_in_cell(cell, old_text, '')
             
             # Calculate total pages needed
             total_pages = (len(records) + 3) // 4  # Ceiling division by 4
