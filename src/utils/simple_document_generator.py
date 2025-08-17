@@ -23,11 +23,36 @@ class SimpleDocumentGenerator:
     def _load_template(self):
         """Load the exact inventory slip template"""
         
-        # If template_path was provided in __init__, try it first
-        if self.template_path and os.path.exists(self.template_path):
-            logger.info(f"Using provided template path: {self.template_path}")
+        def get_webapp_root():
+            """Get the root directory of the web application"""
+            if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+                return '/home/adamcordova/JSONInventorySlipsWeb-copy'
+            else:
+                # Local development path
+                return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        # First try the provided template path
+        template_paths = []
+        if self.template_path:
+            template_paths.append(self.template_path)
+        
+        # Add standard locations
+        webapp_root = get_webapp_root()
+        template_paths.extend([
+            os.path.join(webapp_root, 'templates', 'documents', 'InventorySlips.docx'),
+            os.path.join(webapp_root, 'templates', 'InventorySlips.docx'),
+            os.path.join(webapp_root, 'InventorySlips.docx')
+        ])
+
+        errors = []
+        for template_path in template_paths:
             try:
-                with zipfile.ZipFile(self.template_path) as docx:
+                logger.info(f"Trying template path: {template_path}")
+                if not os.path.exists(template_path):
+                    errors.append(f"File not found: {template_path}")
+                    continue
+                    
+                with zipfile.ZipFile(template_path) as docx:
                     # Check document structure
                     file_list = docx.namelist()
                     required_files = ['word/document.xml', 'word/styles.xml']
@@ -245,51 +270,105 @@ class SimpleDocumentGenerator:
         """Safely replace text in a table cell with content verification"""
         try:
             # Store original content
-            had_content = bool(cell.text.strip())
             original_text = cell.text
             
             logger.debug(f"Cell original text: {original_text[:50]}...")
             logger.debug(f"Looking for: {old_text} to replace with: {new_text}")
             
-            # Method 1: Try replacing in existing paragraphs
-            for paragraph in cell.paragraphs:
-                if old_text in paragraph.text:
-                    logger.debug("Found placeholder in paragraph, replacing...")
-                    self._replace_placeholder_text(paragraph, old_text, new_text)
+            # Try all possible placeholder variants
+            placeholder_variants = [
+                old_text,  # Original format
+                old_text.replace('{{', '{').replace('}}', '}'),  # Single braces
+                old_text.replace('.', ''),  # No dots
+                old_text.replace('.', ' ')  # Spaces instead of dots
+            ]
             
-            # Method 2: If that didn't work and we need to replace something, try direct replacement
-            if old_text in original_text and old_text in cell.text:
-                logger.debug("Using direct cell replacement...")
-                # Store original formatting
-                first_p = cell.paragraphs[0] if cell.paragraphs else None
-                original_font = None
-                original_size = None
-                if first_p and first_p.runs:
-                    original_font = first_p.runs[0].font.name
-                    original_size = first_p.runs[0].font.size
-                
-                # Clear and replace content
-                cell._element.clear_content()
-                p = cell.add_paragraph()
-                run = p.add_run(original_text.replace(old_text, new_text))
-                run.font.name = original_font or 'Arial'
-                run.font.size = original_size or Pt(11)
-                
-            # Verify we still have proper structure
+            # Method 1: Try replacing in existing paragraph runs
+            replaced = False
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    for variant in placeholder_variants:
+                        if variant in run.text:
+                            # Store original formatting
+                            original_font = run.font.name or 'Arial'
+                            original_size = run.font.size or Pt(11)
+                            original_bold = run.bold
+                            original_italic = run.italic
+                            
+                            # Replace text
+                            run.text = run.text.replace(variant, new_text)
+                            
+                            # Restore formatting
+                            run.font.name = original_font
+                            run.font.size = original_size
+                            run.bold = original_bold
+                            run.italic = original_italic
+                            
+                            replaced = True
+                            logger.debug(f"Replaced '{variant}' with '{new_text}' in run")
+            
+            # Method 2: If no replacements made in runs, try paragraph-level replacement
+            if not replaced:
+                for paragraph in cell.paragraphs:
+                    for variant in placeholder_variants:
+                        if variant in paragraph.text:
+                            # Store first run's formatting if it exists
+                            format_run = paragraph.runs[0] if paragraph.runs else None
+                            original_font = format_run.font.name if format_run else 'Arial'
+                            original_size = format_run.font.size if format_run else Pt(11)
+                            
+                            # Clear paragraph content
+                            for run in paragraph.runs:
+                                run._element.getparent().remove(run._element)
+                            
+                            # Add new run with replaced text
+                            new_run = paragraph.add_run(paragraph.text.replace(variant, new_text))
+                            new_run.font.name = original_font
+                            new_run.font.size = original_size
+                            
+                            replaced = True
+                            logger.debug(f"Replaced '{variant}' with '{new_text}' in paragraph")
+            
+            # Method 3: If still no replacement, try cell-level replacement
+            if not replaced:
+                for variant in placeholder_variants:
+                    if variant in cell.text:
+                        # Store cell's first paragraph formatting
+                        first_p = cell.paragraphs[0] if cell.paragraphs else None
+                        first_run = first_p.runs[0] if first_p and first_p.runs else None
+                        original_font = first_run.font.name if first_run else 'Arial'
+                        original_size = first_run.font.size if first_run else Pt(11)
+                        
+                        # Clear cell content
+                        cell._element.clear_content()
+                        
+                        # Add new paragraph with replaced text
+                        p = cell.add_paragraph()
+                        run = p.add_run(original_text.replace(variant, new_text))
+                        run.font.name = original_font
+                        run.font.size = original_size
+                        
+                        replaced = True
+                        logger.debug(f"Replaced '{variant}' with '{new_text}' at cell level")
+            
+            # Verify final state
             if not cell.paragraphs:
                 cell.add_paragraph()
             
             logger.debug(f"Final cell content: {cell.text[:50]}...")
+            return replaced
             
         except Exception as e:
             logger.error(f"Error replacing text in cell: {str(e)}")
             try:
                 # Last resort: direct text replacement
-                current_text = cell.text
-                if old_text in current_text:
-                    cell.text = current_text.replace(old_text, new_text)
+                for variant in placeholder_variants:
+                    if variant in cell.text:
+                        cell.text = cell.text.replace(variant, new_text)
+                        return True
             except Exception as e2:
                 logger.error(f"Could not recover cell content: {str(e2)}")
+            return False
 
     def generate_document(self, records):
         """Generate document using the exact template"""
@@ -330,45 +409,120 @@ class SimpleDocumentGenerator:
                         vendor = vendor.split(' - ')[1]
                     
                     # Define replacements
-                    replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': str(record.get('AcceptedDate', '')),
-                        f'{{{{Label{idx}.Vendor}}}}': vendor,
-                        f'{{{{Label{idx}.ProductName}}}}': str(record.get('ProductName', '')),
-                        f'{{{{Label{idx}.Barcode}}}}': str(record.get('Barcode', '')),
-                        f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
+                    # Create base replacements with different placeholder formats
+                    base_fields = {
+                        'AcceptedDate': str(record.get('AcceptedDate', '')),
+                        'Vendor': vendor,
+                        'ProductName': str(record.get('ProductName', '')),
+                        'Barcode': str(record.get('Barcode', '')),
+                        'QuantityReceived': str(record.get('QuantityReceived', '')),
                     }
+                    
+                    # Generate all placeholder variants for each field
+                    replacements = {}
+                    for field, value in base_fields.items():
+                        variants = [
+                            f'{{{{Label{idx}.{field}}}}}',  # Double braces with dot
+                            f'{{Label{idx}.{field}}}',      # Single braces with dot
+                            f'{{Label{idx}{field}}}',       # Single braces no dot
+                            f'{{Label{idx} {field}}}',      # Single braces with space
+                            f'Label{idx}.{field}',          # No braces with dot
+                            f'Label{idx}{field}',           # No braces no dot
+                            f'Label{idx} {field}',          # No braces with space
+                            # Additional format variations
+                            f'{{Label{idx}_{field}}}',      # Underscore format
+                            f'Label{idx}_{field}',          # No braces with underscore
+                            f'{{{{{field}}}}}',             # Just field name in double braces
+                            f'{{{field}}}',                 # Just field name in single braces
+                            field,                          # Just the field name
+                            f'field{idx}{field}',           # field prefix format
+                            f'{{field{idx}.{field}}}'       # field prefix in braces
+                        ]
+                        
+                        # Add all variants to replacements
+                        for variant in variants:
+                            replacements[variant] = value
+                            # Also add lowercase variants
+                            replacements[variant.lower()] = value
 
                     # Do the replacements in all paragraphs and tables
                     changed = False
-                    # Replace in paragraphs
+                    
+                    # First, scan the document to find what placeholder format is actually used
+                    found_format = None
+                    format_samples = []
+                    
+                    def check_text_for_placeholders(text):
+                        nonlocal found_format
+                        for old_text in replacements.keys():
+                            if old_text in text:
+                                found_format = old_text
+                                format_samples.append(old_text)
+                                return True
+                        return False
+                    
+                    # Scan paragraphs and tables for placeholder format
+                    for paragraph in self.doc.paragraphs:
+                        check_text_for_placeholders(paragraph.text)
+                        
+                    for table in self.doc.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                check_text_for_placeholders(cell.text)
+                    
+                    if format_samples:
+                        logger.info(f"Found placeholder format examples: {format_samples[:3]}")
+                        # Generate new replacements using the detected format pattern
+                        detected_format = format_samples[0]
+                        format_type = 'unknown'
+                        if '{{' in detected_format and '}}' in detected_format:
+                            format_type = 'double_braces'
+                        elif '{' in detected_format and '}' in detected_format:
+                            format_type = 'single_braces'
+                        elif '.' in detected_format:
+                            format_type = 'no_braces_dot'
+                        elif ' ' in detected_format:
+                            format_type = 'no_braces_space'
+                        else:
+                            format_type = 'no_braces_concat'
+                            
+                        logger.info(f"Detected format type: {format_type}")
+                        
+                        # Use the detected format for replacements
+                        updated_replacements = {}
+                        for field, value in base_fields.items():
+                            if format_type == 'double_braces':
+                                key = f'{{{{Label{idx}.{field}}}}}'
+                            elif format_type == 'single_braces':
+                                key = f'{{Label{idx}.{field}}}'
+                            elif format_type == 'no_braces_dot':
+                                key = f'Label{idx}.{field}'
+                            elif format_type == 'no_braces_space':
+                                key = f'Label{idx} {field}'
+                            else:
+                                key = f'Label{idx}{field}'
+                            updated_replacements[key] = value
+                            
+                        replacements = updated_replacements
+                    
+                    # Replace in paragraphs using detected format
                     for paragraph in self.doc.paragraphs:
                         for old_text, new_text in replacements.items():
                             if old_text in paragraph.text:
                                 logger.debug(f"Replacing {old_text} with {new_text}")
                                 self._replace_placeholder_text(paragraph, old_text, new_text)
                                 changed = True
-
-                    # Replace in tables with support for all formats
+                    
+                    # Replace in tables using detected format
                     for table in self.doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
-                                cell_text = cell.text
-                                found_placeholder = False
                                 for old_text, new_text in replacements.items():
-                                    # Check all variations of the placeholder format
-                                    placeholder_variants = [
-                                        old_text,  # Original format with dots
-                                        old_text.replace('.', ''),  # No dots
-                                        old_text.replace('.', ' ')  # Spaces instead of dots
-                                    ]
-                                    for variant in placeholder_variants:
-                                        if variant in cell_text:
-                                            logger.debug(f"Replacing {variant} with {new_text} in table cell")
-                                            self._replace_text_in_cell(cell, variant, new_text)
-                                            found_placeholder = True
-                                            changed = True
-                                if found_placeholder:
-                                    logger.debug(f"Updated cell content: {cell.text[:50]}")
+                                    if old_text in cell.text:
+                                        logger.debug(f"Replacing {old_text} with {new_text} in table cell")
+                                        self._replace_text_in_cell(cell, old_text, new_text)
+                                        changed = True
+                                        logger.debug(f"Updated cell content: {cell.text[:50]}")
 
                     if not changed:
                         logger.warning(f"No replacements made for record {idx} on page {page_num + 1}")
