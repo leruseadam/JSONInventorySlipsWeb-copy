@@ -418,70 +418,86 @@ class SimpleDocumentGenerator:
             logger.info(f"Number of records to process: {len(records)}")
             logger.debug(f"First record sample: {records[0] if records else 'No records'}")
 
-            # Load and validate template
-            if not self.doc:
-                self._load_template()
-                if not self.doc:
-                    raise ValueError("Template failed to load properly")
-
-            # Process records in groups of 4 (for 4 cells per page layout)
-            total_pages = (len(records) + 3) // 4
+            # Start with a fresh document
+            self.doc = Document()
+            
+            # Set up the document
+            section = self.doc.sections[0]
+            section.page_width = Inches(8.5)
+            section.page_height = Inches(11)
+            section.left_margin = Inches(0.5)
+            section.right_margin = Inches(0.5)
+            section.top_margin = Inches(0.5)
+            section.bottom_margin = Inches(0.5)
+            
+            # Create main table
+            table = self.doc.add_table(rows=4, cols=1)
+            table.style = 'Table Grid'
+            table.autofit = False
+            
+            # Set column width for full page width
+            cell_width = Inches(7.5)  # Page width minus margins
+            for cell in table.columns[0].cells:
+                cell.width = cell_width
+                
+            # Calculate total pages needed
+            total_pages = (len(records) + 3) // 4  # 4 records per page
             logger.info(f"Will generate {total_pages} pages")
-
-            # Process each page
-            for page_num in range(total_pages):
-                start_idx = page_num * 4
-                page_records = records[start_idx:start_idx + 4]
-                
-                # Add page break between pages
-                if page_num > 0:
+            
+            # Process records
+            current_page = 1
+            for i in range(0, len(records), 4):
+                if i > 0:  # Add page break between pages
                     self.doc.add_page_break()
+                    # Add new table for this page
+                    table = self.doc.add_table(rows=4, cols=1)
+                    table.style = 'Table Grid'
+                    table.autofit = False
+                    for cell in table.columns[0].cells:
+                        cell.width = cell_width
                 
-                # Replace placeholders for each record on this page
-                for idx, record in enumerate(page_records, 1):
-                    logger.info(f"Processing record {idx} on page {page_num + 1}")
+                # Process this page's records
+                page_records = records[i:i + 4]
+                for idx, record in enumerate(page_records):
+                    logger.info(f"Processing record {idx + 1} on page {current_page}")
                     
                     # Clean up vendor name if needed
                     vendor = record.get('Vendor', 'Unknown')
                     if ' - ' in vendor:
                         vendor = vendor.split(' - ')[1]
                     
-                    # Define replacements
-                    # Create base replacements with different placeholder formats
-                    base_fields = {
-                        'AcceptedDate': str(record.get('AcceptedDate', '')),
-                        'Vendor': vendor,
+                    # Prepare record data
+                    record_data = {
                         'ProductName': str(record.get('ProductName', '')),
                         'Barcode': str(record.get('Barcode', '')),
                         'QuantityReceived': str(record.get('QuantityReceived', '')),
+                        'AcceptedDate': str(record.get('AcceptedDate', '')),
+                        'Vendor': vendor
                     }
                     
-                    # Generate all placeholder variants for each field
-                    replacements = {}
-                    for field, value in base_fields.items():
-                        variants = [
-                            f'{{{{Label{idx}.{field}}}}}',  # Double braces with dot
-                            f'{{Label{idx}.{field}}}',      # Single braces with dot
-                            f'{{Label{idx}{field}}}',       # Single braces no dot
-                            f'{{Label{idx} {field}}}',      # Single braces with space
-                            f'Label{idx}.{field}',          # No braces with dot
-                            f'Label{idx}{field}',           # No braces no dot
-                            f'Label{idx} {field}',          # No braces with space
-                            # Additional format variations
-                            f'{{Label{idx}_{field}}}',      # Underscore format
-                            f'Label{idx}_{field}',          # No braces with underscore
-                            f'{{{{{field}}}}}',             # Just field name in double braces
-                            f'{{{field}}}',                 # Just field name in single braces
-                            field,                          # Just the field name
-                            f'field{idx}{field}',           # field prefix format
-                            f'{{field{idx}.{field}}}'       # field prefix in braces
-                        ]
-                        
-                        # Add all variants to replacements
-                        for variant in variants:
-                            replacements[variant] = value
-                            # Also add lowercase variants
-                            replacements[variant.lower()] = value
+                    # Get cell from current table
+                    cell = table.rows[idx].cells[0]
+                    
+                    # Clear any existing content
+                    for paragraph in cell.paragraphs:
+                        p = paragraph._element
+                        p.getparent().remove(p)
+                    
+                    # Add formatted content
+                    self._add_label(cell, record_data)
+                    
+                    # Verify cell content
+                    if not cell.text.strip():
+                        raise ValueError(f"Failed to add content for record {idx + 1} on page {current_page}")
+                    else:
+                        logger.info(f"Added content for record {idx + 1} on page {current_page} (Length: {len(cell.text)})")
+                
+                current_page += 1
+                    return True, None
+            
+        except Exception as e:
+            logger.error(f"Error generating document: {str(e)}")
+            return False, str(e)
 
                     # Do the replacements in all paragraphs and tables
                     changed = False
