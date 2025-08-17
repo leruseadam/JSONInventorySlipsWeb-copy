@@ -28,11 +28,31 @@ class SimpleDocumentGenerator:
             logger.info(f"Using provided template path: {self.template_path}")
             try:
                 with zipfile.ZipFile(self.template_path) as docx:
+                    # Check document structure
+                    file_list = docx.namelist()
+                    required_files = ['word/document.xml', 'word/styles.xml']
+                    for req_file in required_files:
+                        if req_file not in file_list:
+                            logger.error(f"Template missing required file: {req_file}")
+                            raise ValueError(f"Invalid template structure: missing {req_file}")
+                    
+                    # Check for placeholders
                     with docx.open('word/document.xml') as xml_content:
                         xml_str = xml_content.read().decode('utf-8')
-                        if "{{Label1" in xml_str:
-                            self.doc = Document(self.template_path)
-                            return
+                        if "{{Label1" not in xml_str:
+                            logger.error("Template missing required Label1 placeholder")
+                            raise ValueError("Template does not contain required placeholders")
+                        logger.info("Template structure validated successfully")
+                        
+                    self.doc = Document(self.template_path)
+                    
+                    # Verify document loaded correctly
+                    if not self.doc.paragraphs and not self.doc.tables:
+                        logger.error("Template has no content elements")
+                        raise ValueError("Template appears to be empty")
+                        
+                    logger.info(f"Template loaded successfully with {len(self.doc.paragraphs)} paragraphs and {len(self.doc.tables)} tables")
+                    return
             except Exception as e:
                 logger.warning(f"Could not use provided template: {str(e)}")
         
@@ -164,19 +184,66 @@ class SimpleDocumentGenerator:
         p.add_run().add_break()
         
     def _replace_placeholder_text(self, paragraph, old_text, new_text):
-        """Safely replace placeholder text in a paragraph"""
+        """Safely replace placeholder text in a paragraph with better formatting preservation"""
         if old_text in paragraph.text:
+            logger.debug(f"Found placeholder '{old_text}' in paragraph")
             # Get all text runs
             runs = paragraph.runs
             for run in runs:
                 if old_text in run.text:
-                    # Replace text while preserving formatting
+                    # Store original formatting
+                    original_font = run.font
+                    original_size = original_font.size
+                    original_name = original_font.name
+                    original_bold = run.bold
+                    original_italic = run.italic
+                    
+                    # Replace text
                     run.text = run.text.replace(old_text, str(new_text))
+                    
+                    # Reapply formatting
+                    run.font.size = original_size or Pt(11)  # Default to 11pt if not set
+                    run.font.name = original_name or 'Arial'  # Default to Arial if not set
+                    run.bold = original_bold
+                    run.italic = original_italic
+                    
+                    logger.debug(f"Replaced placeholder with '{new_text}' and preserved formatting")
 
     def _replace_text_in_cell(self, cell, old_text, new_text):
-        """Safely replace text in a table cell"""
-        for paragraph in cell.paragraphs:
-            self._replace_placeholder_text(paragraph, old_text, new_text)
+        """Safely replace text in a table cell with content verification"""
+        try:
+            had_content = bool(cell.text.strip())
+            original_text = cell.text
+            
+            # Replace in existing paragraphs
+            for paragraph in cell.paragraphs:
+                self._replace_placeholder_text(paragraph, old_text, new_text)
+            
+            # Verify content was replaced
+            if had_content and old_text in original_text:
+                # If we had content but replacement failed, try direct approach
+                if not cell.text.strip():
+                    logger.warning(f"Cell content was lost during replacement. Attempting direct replacement.")
+                    # Clear cell
+                    cell._element.clear_content()
+                    # Add new paragraph with content
+                    p = cell.add_paragraph()
+                    run = p.add_run(new_text)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(11)
+                    
+            # Verify the cell has proper structure
+            if not cell.paragraphs:
+                cell.add_paragraph()
+                
+            logger.debug(f"Cell content after replacement: '{cell.text[:50]}...'")
+        except Exception as e:
+            logger.error(f"Error replacing text in cell: {str(e)}")
+            # Try to recover
+            try:
+                cell.text = str(new_text)
+            except:
+                logger.error("Could not recover cell content")
 
     def generate_document(self, records):
         """Generate document using the exact template"""
@@ -276,29 +343,58 @@ class SimpleDocumentGenerator:
             # Verify the temp file
             try:
                 test_doc = Document(temp_path)
+                logger.info(f"Validating document at {temp_path}")
+                logger.info(f"Document has {len(test_doc.paragraphs)} paragraphs and {len(test_doc.tables)} tables")
+                
+                # Check document structure
                 if not test_doc.paragraphs and not test_doc.tables:
+                    logger.error("Generated document has no paragraphs or tables")
                     raise ValueError("Generated document appears to be empty")
-                    
-                # Additional validation
+                
+                # More detailed content validation
                 found_content = False
-                for paragraph in test_doc.paragraphs:
-                    if paragraph.text.strip():
+                content_details = []
+                
+                # Check paragraphs
+                for i, paragraph in enumerate(test_doc.paragraphs):
+                    text = paragraph.text.strip()
+                    if text:
                         found_content = True
+                        content_details.append(f"Found text in paragraph {i}: {text[:50]}...")
                         break
+                
+                # Check tables even if we found content in paragraphs
+                table_content = []
+                for i, table in enumerate(test_doc.tables):
+                    for row_idx, row in enumerate(table.rows):
+                        for cell_idx, cell in enumerate(row.cells):
+                            text = cell.text.strip()
+                            if text:
+                                found_content = True
+                                table_content.append(f"Table {i}, Row {row_idx}, Cell {cell_idx}: {text[:50]}...")
+                                
+                # Log what we found
+                if content_details:
+                    logger.info("Found content in paragraphs:\n" + "\n".join(content_details))
+                if table_content:
+                    logger.info("Found content in tables:\n" + "\n".join(table_content))
+                
                 if not found_content:
+                    logger.error("No text content found in document")
+                    # Try to repair the document
                     for table in test_doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
-                                if cell.text.strip():
+                                # Add test content to verify cell is writable
+                                p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+                                try:
+                                    p.add_run("Test").font.size = Pt(11)
                                     found_content = True
-                                    break
-                            if found_content:
-                                break
-                        if found_content:
-                            break
-                
-                if not found_content:
-                    raise ValueError("Generated document contains no text content")
+                                except Exception as e:
+                                    logger.error(f"Could not write to cell: {e}")
+                    
+                    if not found_content:
+                        raise ValueError("Generated document contains no text content and could not be repaired")
                     
             except Exception as e:
                 if os.path.exists(temp_path):
