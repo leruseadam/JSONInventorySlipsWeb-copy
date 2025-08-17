@@ -10,6 +10,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from copy import deepcopy
 import os
+import re
 import zipfile
 from xml.etree import ElementTree as ET
 
@@ -19,7 +20,55 @@ class SimpleDocumentGenerator:
     def __init__(self, template_path=None):
         self.doc = None
         self.template_path = template_path
+        self._format_type = None  # Will store the detected placeholder format type
         
+    def _analyze_template_content(self, template_path):
+        """Analyze template content to find placeholders and document structure"""
+        try:
+            with zipfile.ZipFile(template_path) as docx:
+                with docx.open('word/document.xml') as xml_content:
+                    xml_str = xml_content.read().decode('utf-8')
+                    
+                    # Try to find any Label placeholders
+                    formats_found = []
+                    
+                    # Search for various placeholder formats
+                    patterns = [
+                        (r'\{\{Label\d+\.[A-Za-z]+\}\}', 'double_braces_dot'),
+                        (r'\{Label\d+\.[A-Za-z]+\}', 'single_braces_dot'),
+                        (r'\{\{Label\d+[A-Za-z]+\}\}', 'double_braces_no_dot'),
+                        (r'\{Label\d+[A-Za-z]+\}', 'single_braces_no_dot'),
+                        (r'Label\d+\.[A-Za-z]+', 'no_braces_dot'),
+                        (r'Label\d+[A-Za-z]+', 'no_braces_no_dot'),
+                        (r'Label\d+ [A-Za-z]+', 'no_braces_space')
+                    ]
+                    
+                    for pattern, format_type in patterns:
+                        matches = re.findall(pattern, xml_str)
+                        if matches:
+                            formats_found.append({
+                                'type': format_type,
+                                'examples': matches[:3],
+                                'count': len(matches)
+                            })
+                    
+                    if not formats_found:
+                        logger.warning(f"No standard Label placeholders found in template")
+                        # Try to find any placeholder-like patterns
+                        custom_patterns = re.findall(r'\{[^}]+\}|\{\{[^}]+\}\}|Label\d+[^\s<]+', xml_str)
+                        if custom_patterns:
+                            logger.info("Found potential custom placeholders: " + str(custom_patterns[:5]))
+                    else:
+                        for fmt in formats_found:
+                            logger.info(f"Found {fmt['count']} placeholders of type {fmt['type']}")
+                            logger.info(f"Examples: {fmt['examples']}")
+                    
+                    return formats_found, xml_str
+            
+        except Exception as e:
+            logger.error(f"Error analyzing template: {str(e)}")
+            return [], None
+            
     def _load_template(self):
         """Load the exact inventory slip template"""
         
@@ -61,30 +110,19 @@ class SimpleDocumentGenerator:
                             logger.error(f"Template missing required file: {req_file}")
                             raise ValueError(f"Invalid template structure: missing {req_file}")
                     
-                    # Check for placeholders
-                    with docx.open('word/document.xml') as xml_content:
-                        xml_str = xml_content.read().decode('utf-8')
-                        
-                        # Check for different placeholder formats
-                        placeholder_patterns = [
-                            "{{Label1.ProductName}}",
-                            "{{Label1ProductName}}",
-                            "{{Label1 ProductName}}"
-                        ]
-                        
-                        found_pattern = None
-                        for pattern in placeholder_patterns:
-                            if pattern in xml_str:
-                                found_pattern = pattern
-                                break
-                                
-                        if not found_pattern:
-                            logger.error("Template missing required Label1 placeholders")
-                            logger.error("Expected one of: " + ", ".join(placeholder_patterns))
+                    # Analyze template content
+                    formats_found, xml_str = self._analyze_template_content(template_path)
+                    
+                    if not formats_found:
+                        logger.error("Template missing required placeholders")
+                        if xml_str:
                             logger.error("Template content sample: " + xml_str[:200])
-                            raise ValueError("Template does not contain required placeholders")
-                            
-                        logger.info(f"Template validated successfully using pattern: {found_pattern}")
+                        raise ValueError("Template does not contain required placeholders")
+                        
+                    # Store the detected format type for later use
+                    self._format_type = formats_found[0]['type']
+                    logger.info(f"Template validated successfully using format: {self._format_type}")
+                    logger.info(f"Found placeholder examples: {formats_found[0]['examples']}")
                         
                     self.doc = Document(self.template_path)
                     
@@ -565,6 +603,19 @@ class SimpleDocumentGenerator:
         """Save the document with validation and error handling"""
         temp_path = None
         try:
+            # Pre-save validation
+            logger.info("Performing pre-save document validation...")
+            
+            # Check if we have any content before saving
+            content_summary = self._validate_document_content(self.doc)
+            if not content_summary['has_content']:
+                logger.error("Document appears to be empty before saving")
+                logger.error(f"Document structure: {content_summary['structure']}")
+                if content_summary.get('placeholders_found'):
+                    logger.error("Found unprocessed placeholders: " + 
+                              ", ".join(content_summary['placeholders_found'][:5]))
+                raise ValueError("Document is empty - no content to save")
+                
             # Ensure directory exists
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             
@@ -572,76 +623,32 @@ class SimpleDocumentGenerator:
             temp_path = f"{filepath}.tmp"
             self.doc.save(temp_path)
             
-            # Verify the temp file
+            # Verify the saved file
             try:
                 test_doc = Document(temp_path)
-                logger.info(f"Validating document at {temp_path}")
-                logger.info(f"Document has {len(test_doc.paragraphs)} paragraphs and {len(test_doc.tables)} tables")
+                logger.info(f"Validating saved document at {temp_path}")
+                saved_content = self._validate_document_content(test_doc)
                 
-                # Check document structure
-                if not test_doc.paragraphs and not test_doc.tables:
-                    logger.error("Generated document has no paragraphs or tables")
-                    raise ValueError("Generated document appears to be empty")
-                
-                # More detailed content validation
-                found_content = False
-                content_details = []
-                
-                # Check paragraphs
-                for i, paragraph in enumerate(test_doc.paragraphs):
-                    text = paragraph.text.strip()
-                    if text:
-                        found_content = True
-                        content_details.append(f"Found text in paragraph {i}: {text[:50]}...")
-                        break
-                
-                # Check tables even if we found content in paragraphs
-                table_content = []
-                for i, table in enumerate(test_doc.tables):
-                    for row_idx, row in enumerate(table.rows):
-                        for cell_idx, cell in enumerate(row.cells):
-                            text = cell.text.strip()
-                            if text:
-                                found_content = True
-                                table_content.append(f"Table {i}, Row {row_idx}, Cell {cell_idx}: {text[:50]}...")
-                                
-                # Log what we found
-                if content_details:
-                    logger.info("Found content in paragraphs:\n" + "\n".join(content_details))
-                if table_content:
-                    logger.info("Found content in tables:\n" + "\n".join(table_content))
-                
-                if not found_content:
-                    logger.error("No text content found in document")
-                    # Try to repair the document
-                    for table in test_doc.tables:
-                        for row in table.rows:
-                            for cell in row.cells:
-                                # Add test content to verify cell is writable
-                                p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
-                                try:
-                                    p.add_run("Test").font.size = Pt(11)
-                                    found_content = True
-                                except Exception as e:
-                                    logger.error(f"Could not write to cell: {e}")
+                if not saved_content['has_content']:
+                    logger.error("Saved document appears to be empty")
+                    logger.error(f"Document structure: {saved_content['structure']}")
+                    raise ValueError("Saved document contains no content")
                     
-                    if not found_content:
-                        raise ValueError("Generated document contains no text content and could not be repaired")
-                    
+                # Log content details
+                logger.info(f"Document validation successful:")
+                logger.info(f"- Paragraphs: {saved_content['paragraphs']}")
+                logger.info(f"- Tables: {saved_content['tables']}")
+                logger.info(f"- Content samples: {saved_content['samples']}")
+                
             except Exception as e:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise ValueError(f"Document validation failed: {str(e)}")
+                logger.error(f"Document validation failed: {str(e)}")
+                raise
                 
             # Move temp file to final location
             if os.path.exists(filepath):
                 os.remove(filepath)
             os.rename(temp_path, filepath)
             
-            # Final verification
-            if not os.path.exists(filepath):
-                raise ValueError("Failed to move document to final location")
-                
             return True, None
             
         except Exception as e:
@@ -652,3 +659,49 @@ class SimpleDocumentGenerator:
                 except:
                     pass
             return False, str(e)
+            
+    def _validate_document_content(self, doc):
+        """Helper method to validate document content"""
+        result = {
+            'has_content': False,
+            'structure': f"{len(doc.paragraphs)} paragraphs, {len(doc.tables)} tables",
+            'paragraphs': [],
+            'tables': [],
+            'samples': [],
+            'placeholders_found': []
+        }
+        
+        # Check paragraphs
+        for i, para in enumerate(doc.paragraphs):
+            text = para.text.strip()
+            if text:
+                result['has_content'] = True
+                result['paragraphs'].append(f"P{i}: {text[:50]}...")
+                result['samples'].append(text[:50])
+                
+                # Check for unprocessed placeholders
+                if '{{Label' in text or '{Label' in text or 'Label' in text:
+                    result['placeholders_found'].append(text)
+        
+        # Check tables
+        for i, table in enumerate(doc.tables):
+            for row_idx, row in enumerate(table.rows):
+                for cell_idx, cell in enumerate(row.cells):
+                    text = cell.text.strip()
+                    if text:
+                        result['has_content'] = True
+                        result['tables'].append(
+                            f"T{i}R{row_idx}C{cell_idx}: {text[:50]}...")
+                        result['samples'].append(text[:50])
+                        
+                        # Check for unprocessed placeholders
+                        if '{{Label' in text or '{Label' in text or 'Label' in text:
+                            result['placeholders_found'].append(text)
+        
+        # Truncate lists to prevent excessive logging
+        result['paragraphs'] = result['paragraphs'][:5]  # Show first 5
+        result['tables'] = result['tables'][:5]          # Show first 5
+        result['samples'] = result['samples'][:3]        # Show first 3
+        result['placeholders_found'] = result['placeholders_found'][:5]  # Show first 5
+        
+        return result
