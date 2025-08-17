@@ -39,10 +39,27 @@ class SimpleDocumentGenerator:
                     # Check for placeholders
                     with docx.open('word/document.xml') as xml_content:
                         xml_str = xml_content.read().decode('utf-8')
-                        if "{{Label1" not in xml_str:
-                            logger.error("Template missing required Label1 placeholder")
+                        
+                        # Check for different placeholder formats
+                        placeholder_patterns = [
+                            "{{Label1.ProductName}}",
+                            "{{Label1ProductName}}",
+                            "{{Label1 ProductName}}"
+                        ]
+                        
+                        found_pattern = None
+                        for pattern in placeholder_patterns:
+                            if pattern in xml_str:
+                                found_pattern = pattern
+                                break
+                                
+                        if not found_pattern:
+                            logger.error("Template missing required Label1 placeholders")
+                            logger.error("Expected one of: " + ", ".join(placeholder_patterns))
+                            logger.error("Template content sample: " + xml_str[:200])
                             raise ValueError("Template does not contain required placeholders")
-                        logger.info("Template structure validated successfully")
+                            
+                        logger.info(f"Template validated successfully using pattern: {found_pattern}")
                         
                     self.doc = Document(self.template_path)
                     
@@ -185,18 +202,42 @@ class SimpleDocumentGenerator:
         
     def _replace_placeholder_text(self, paragraph, old_text, new_text):
         """Safely replace placeholder text in a paragraph with better formatting preservation"""
-        if old_text in paragraph.text:
-            logger.debug(f"Found placeholder '{old_text}' in paragraph")
+        if any(pattern in paragraph.text for pattern in [old_text, old_text.replace('.', ''), old_text.replace('.', ' ')]):
+            logger.debug(f"Found placeholder pattern matching '{old_text}' in paragraph")
             # Get all text runs
             runs = paragraph.runs
+            
+            # Try different placeholder formats
+            placeholder_variants = [
+                old_text,  # Original format
+                old_text.replace('.', ''),  # No dots
+                old_text.replace('.', ' ')  # Spaces instead of dots
+            ]
+            
             for run in runs:
-                if old_text in run.text:
-                    # Store original formatting
-                    original_font = run.font
-                    original_size = original_font.size
-                    original_name = original_font.name
-                    original_bold = run.bold
-                    original_italic = run.italic
+                original_text = run.text
+                # Store original formatting
+                original_font = run.font
+                original_size = original_font.size
+                original_name = original_font.name
+                original_bold = run.bold
+                original_italic = run.italic
+                
+                # Try each placeholder variant
+                for variant in placeholder_variants:
+                    if variant in run.text:
+                        # Replace the text
+                        run.text = run.text.replace(variant, str(new_text))
+                        
+                        # Reapply formatting
+                        run.font.size = original_size or Pt(11)
+                        run.font.name = original_name or 'Arial'
+                        run.bold = original_bold
+                        run.italic = original_italic
+                        
+                        if run.text != original_text:
+                            logger.debug(f"Successfully replaced '{variant}' with '{new_text}'")
+                            break
                     
                     # Replace text
                     run.text = run.text.replace(old_text, str(new_text))
@@ -274,21 +315,43 @@ class SimpleDocumentGenerator:
                 if i > 0:
                     self.doc.add_page_break()
                 
-                # Replace placeholders for each record
-                for idx, record in enumerate(page_records, 1):
-                    vendor = record.get('Vendor', 'Unknown')
-                    if ' - ' in vendor:  # Clean up vendor name if it has license
-                        vendor = vendor.split(' - ')[1]
+                    # Replace placeholders for each record
+                    for idx, record in enumerate(page_records, 1):
+                        vendor = record.get('Vendor', 'Unknown')
+                        if ' - ' in vendor:  # Clean up vendor name if it has license
+                            vendor = vendor.split(' - ')[1]
+                            
+                        # Define all possible placeholder formats
+                        replacements = {}
                         
-                    replacements = {
-                        f'{{{{Label{idx}.AcceptedDate}}}}': record.get('AcceptedDate', ''),
-                        f'{{{{Label{idx}.Vendor}}}}': vendor,
-                        f'{{{{Label{idx}.ProductName}}}}': record.get('ProductName', ''),
-                        f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode', ''),
-                        f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
-                    }
-                    
-                    # Replace in paragraphs
+                        # Original format
+                        replacements.update({
+                            f'{{{{Label{idx}.AcceptedDate}}}}': record.get('AcceptedDate', ''),
+                            f'{{{{Label{idx}.Vendor}}}}': vendor,
+                            f'{{{{Label{idx}.ProductName}}}}': record.get('ProductName', ''),
+                            f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode', ''),
+                            f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('QuantityReceived', '')),
+                        })
+                        
+                        # Direct format (no dots)
+                        replacements.update({
+                            f'{{Label{idx}AcceptedDate}}': record.get('AcceptedDate', ''),
+                            f'{{Label{idx}Vendor}}': vendor,
+                            f'{{Label{idx}ProductName}}': record.get('ProductName', ''),
+                            f'{{Label{idx}Barcode}}': record.get('Barcode', ''),
+                            f'{{Label{idx}QuantityReceived}}': str(record.get('QuantityReceived', '')),
+                        })
+                        
+                        # Legacy format with spaces
+                        replacements.update({
+                            f'{{Label{idx} AcceptedDate}}': record.get('AcceptedDate', ''),
+                            f'{{Label{idx} Vendor}}': vendor,
+                            f'{{Label{idx} ProductName}}': record.get('ProductName', ''),
+                            f'{{Label{idx} Barcode}}': record.get('Barcode', ''),
+                            f'{{Label{idx} QuantityReceived}}': str(record.get('QuantityReceived', '')),
+                        })
+                        
+                        logger.info(f"Replacing placeholders for record {idx}: {list(replacements.keys())}")                    # Replace in paragraphs
                     for paragraph in self.doc.paragraphs:
                         for old_text, new_text in replacements.items():
                             self._replace_placeholder_text(paragraph, old_text, new_text)
