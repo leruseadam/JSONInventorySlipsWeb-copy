@@ -74,6 +74,7 @@ from werkzeug.utils import secure_filename
 
 # Local imports
 from src.utils.document_handler import DocumentHandler
+from src.utils.docx_validator import validate_docx
 from src.ui.app import InventorySlipGenerator
 
 
@@ -198,7 +199,27 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.i
 
 def get_webapp_dir():
     """Get the absolute path to the webapp directory"""
+    if 'PYTHONANYWHERE_DOMAIN' in os.environ:
+        return '/home/adamcordova/JSONInventorySlipsWeb-copy'
     return os.path.dirname(os.path.abspath(__file__))
+
+def ensure_dirs():
+    """Ensure all required directories exist with proper permissions"""
+    webapp_dir = get_webapp_dir()
+    dirs = [
+        os.path.join(webapp_dir, 'downloads'),
+        os.path.join(webapp_dir, 'logs'),
+        os.path.join(webapp_dir, 'templates', 'documents'),
+        os.path.join(tempfile.gettempdir(), 'inventory_generator', 'uploads')
+    ]
+    
+    for dir_path in dirs:
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+            # Set write permissions
+            os.chmod(dir_path, 0o777)
+        except Exception as e:
+            logger.error(f"Failed to create/set permissions for directory {dir_path}: {e}")
 
 def get_downloads_dir():
     """Get the default downloads directory or webapp/downloads"""
@@ -265,6 +286,9 @@ API_CONFIGS = {
         'auth_type': 'oauth2'
     }
 }
+
+# Create required directories
+ensure_dirs()
 
 # Initialize Flask application
 app = Flask(__name__,
@@ -656,14 +680,16 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             if not validate_docx(temp_path):
                 raise ValueError("Generated document is corrupted")
             
-            # Move to final location
+            # Move to final location and set permissions
             import shutil
             shutil.move(temp_path, outpath)
+            set_file_permissions(outpath)
 
             # Adjust font sizes
             if status_callback:
                 status_callback("Adjusting formatting...")
             adjust_table_font_sizes(outpath)
+            set_file_permissions(outpath)  # Ensure permissions after font adjustment
 
             if progress_callback:
                 progress_callback(100)
@@ -1069,6 +1095,14 @@ def cleanup_temp_files():
                     logger.warning(f"Could not remove temporary file {temp_file}: {e}")
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
+
+def set_file_permissions(filepath):
+    """Set appropriate permissions for generated files"""
+    try:
+        os.chmod(filepath, 0o666)  # Read/write for everyone
+        os.chmod(os.path.dirname(filepath), 0o777)  # Full access to directory
+    except Exception as e:
+        logger.warning(f"Could not set permissions for {filepath}: {e}")
 
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
     try:
