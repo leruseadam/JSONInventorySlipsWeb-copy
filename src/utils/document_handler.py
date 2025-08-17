@@ -158,12 +158,35 @@ class DocumentHandler:
 
                     # Replace placeholders for each record in chunk
                     for idx, record in enumerate(chunk, 1):
+                        # Get record values with defaults
+                        accepted_date = str(record.get('Accepted Date', ''))
+                        vendor = str(record.get('Vendor', 'Unknown Vendor'))
+                        product_name = str(record.get('Product Name*', ''))
+                        barcode = str(record.get('Barcode*', ''))
+                        quantity = str(record.get('Quantity Received*', ''))
+                        
+                        # Handle all placeholder formats
                         replacements = {
-                            f'{{{{Label{idx}.AcceptedDate}}}}': str(record.get('Accepted Date', '')),
-                            f'{{{{Label{idx}.Vendor}}}}': str(record.get('Vendor', 'Unknown Vendor')),
-                            f'{{{{Label{idx}.ProductName}}}}': str(record.get('Product Name*', '')),
-                            f'{{{{Label{idx}.Barcode}}}}': str(record.get('Barcode*', '')),
-                            f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('Quantity Received*', ''))
+                            # Format 1: {{LabelN.Field}}
+                            f'{{{{Label{idx}.AcceptedDate}}}}': accepted_date,
+                            f'{{{{Label{idx}.Vendor}}}}': vendor,
+                            f'{{{{Label{idx}.ProductName}}}}': product_name,
+                            f'{{{{Label{idx}.Barcode}}}}': barcode,
+                            f'{{{{Label{idx}.QuantityReceived}}}}': quantity,
+                            
+                            # Format 2: {LabelNField}
+                            f'{{Label{idx}AcceptedDate}}': accepted_date,
+                            f'{{Label{idx}Vendor}}': vendor,
+                            f'{{Label{idx}ProductName}}': product_name,
+                            f'{{Label{idx}Barcode}}': barcode,
+                            f'{{Label{idx}QuantityReceived}}': quantity,
+                            
+                            # Format 3: {LabelN Field}
+                            f'{{Label{idx} AcceptedDate}}': accepted_date,
+                            f'{{Label{idx} Vendor}}': vendor,
+                            f'{{Label{idx} ProductName}}': product_name,
+                            f'{{Label{idx} Barcode}}': barcode,
+                            f'{{Label{idx} QuantityReceived}}': quantity
                         }
                         
                         # Apply replacements in all paragraphs
@@ -178,11 +201,26 @@ class DocumentHandler:
                     # Clean up unused placeholders for this chunk
                     for idx in range(len(chunk) + 1, chunk_size + 1):
                         empty_replacements = {
+                            # Format 1: {{LabelN.Field}}
                             f'{{{{Label{idx}.AcceptedDate}}}}': '',
                             f'{{{{Label{idx}.Vendor}}}}': '',
                             f'{{{{Label{idx}.ProductName}}}}': '',
                             f'{{{{Label{idx}.Barcode}}}}': '',
-                            f'{{{{Label{idx}.QuantityReceived}}}}': ''
+                            f'{{{{Label{idx}.QuantityReceived}}}}': '',
+                            
+                            # Format 2: {LabelNField}
+                            f'{{Label{idx}AcceptedDate}}': '',
+                            f'{{Label{idx}Vendor}}': '',
+                            f'{{Label{idx}ProductName}}': '',
+                            f'{{Label{idx}Barcode}}': '',
+                            f'{{Label{idx}QuantityReceived}}': '',
+                            
+                            # Format 3: {LabelN Field}
+                            f'{{Label{idx} AcceptedDate}}': '',
+                            f'{{Label{idx} Vendor}}': '',
+                            f'{{Label{idx} ProductName}}': '',
+                            f'{{Label{idx} Barcode}}': '',
+                            f'{{Label{idx} QuantityReceived}}': ''
                         }
                         
                         for paragraph in all_paragraphs:
