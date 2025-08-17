@@ -285,7 +285,17 @@ function generateSlips() {
     })
     .then(function(response) {
         if (!response.ok) {
-            throw new Error('Network response was not ok');
+            // Try to get error details from response
+            return response.text().then(text => {
+                try {
+                    // Try to parse as JSON first
+                    const error = JSON.parse(text);
+                    throw new Error(error.message || error.error || text);
+                } catch (e) {
+                    // If not JSON, use the text as is
+                    throw new Error(text || `Server error (${response.status})`);
+                }
+            });
         }
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
@@ -321,7 +331,11 @@ function generateSlips() {
         if (progressModal) {
             progressModal.hide();
         }
-        alert('Error generating slips: ' + error.message);
+        // Show a more detailed error message
+        updateProgress(0, 'Generation failed');
+        const errorMessage = error.message || 'Unknown error occurred';
+        alert('Error generating slips: ' + errorMessage);
+        console.error('Document generation error:', error);
     });
 }
 

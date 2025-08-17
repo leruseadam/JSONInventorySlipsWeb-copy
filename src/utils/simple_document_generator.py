@@ -10,6 +10,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from copy import deepcopy
 import os
+import zipfile
+from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -20,49 +22,44 @@ class SimpleDocumentGenerator:
     def _load_template(self):
         """Load the exact inventory slip template"""
         # Try multiple template locations
-        potential_paths = [
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                        'templates', 'documents', 'InventorySlips.docx'),
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                        'templates', 'documents', 'InventorySlips_old.docx'),
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
-                        'templates', 'documents', 'template_check.docx')
+        base_paths = [
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # From src/utils
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),  # From project root
+            os.path.join(os.path.expanduser('~'), 'Desktop', 'JSONInventorySlipsWeb-copy'),  # From desktop
+            os.path.join(os.path.expanduser('~'), 'JSONInventorySlipsWeb-copy')  # From home
         ]
+        
+        potential_paths = []
+        for base_path in base_paths:
+            potential_paths.extend([
+                os.path.join(base_path, 'templates', 'documents', 'InventorySlips.docx'),
+                os.path.join(base_path, 'templates', 'documents', 'InventorySlips.backup.docx'),
+                os.path.join(base_path, 'templates', 'documents', 'InventorySlips_old.docx')
+            ])
         
         template_errors = []
         # Try each path
         for template_path in potential_paths:
-            if os.path.exists(template_path):
-                logger.info(f"Loading template from: {template_path}")
-                try:
-                    self.doc = Document(template_path)
-                    # Verify the template structure by looking for any of the expected placeholders
-                    template_valid = False
-                    expected_placeholders = [
-                        "{{Label1.AcceptedDate}}",
-                        "{{Label1.Vendor}}",
-                        "{{Label1.ProductName}}",
-                        "{{Label1.Barcode}}",
-                        "{{Label1.QuantityReceived}}"
-                    ]
-                    
-                    # Check both paragraphs and table cells
-                    for element in list(self.doc.paragraphs) + [cell for table in self.doc.tables for row in table.rows for cell in row.cells]:
-                        for paragraph in getattr(element, 'paragraphs', [element]):
-                            text = paragraph.text
-                            if any(placeholder in text for placeholder in expected_placeholders):
-                                template_valid = True
-                                logger.info(f"Successfully loaded template: {template_path}")
-                                return
-                                
-                    if not template_valid:
-                        template_errors.append(f"{template_path}: Template structure not valid - missing required placeholders")
-                except Exception as e:
-                    template_errors.append(f"{template_path}: {str(e)}")
-                    continue
-            else:
+            if not os.path.exists(template_path):
                 template_errors.append(f"{template_path}: File not found")
+                continue
+            
+            logger.info(f"Loading template from: {template_path}")
+            try:
+                with zipfile.ZipFile(template_path) as docx:
+                    with docx.open('word/document.xml') as xml_content:
+                        xml_str = xml_content.read().decode('utf-8')
+                        # Look for Label1 placeholders in raw XML
+                        if "{{Label1" in xml_str:
+                            logger.info(f"Found valid placeholders in {template_path}")
+                            self.doc = Document(template_path)
+                            return
+                        template_errors.append(f"{template_path}: Could not find Label1 placeholders in template")
+            except Exception as e:
+                logger.error(f"Error reading template {template_path}: {str(e)}")
+                template_errors.append(f"{template_path}: {str(e)}")
         
+        # If we get here, no valid template was found
         error_details = "\n".join(template_errors)
         raise ValueError(f"No valid template found. Errors:\n{error_details}")
             
@@ -171,43 +168,12 @@ class SimpleDocumentGenerator:
             
             logger.info(f"Will generate {total_pages} pages")
             
-            # Store the template first page by finding any Label1 placeholder
-            template_page = None
-            
-            # Check both paragraphs and table cells for Label1 placeholders
-            for element in list(self.doc.paragraphs) + [cell for table in self.doc.tables for row in table.rows for cell in row.cells]:
-                for paragraph in getattr(element, 'paragraphs', [element]):
-                    if any(pattern in paragraph.text for pattern in [
-                        "{{Label1.AcceptedDate}}",
-                        "{{Label1.Vendor}}",
-                        "{{Label1.ProductName}}",
-                        "{{Label1.Barcode}}",
-                        "{{Label1.QuantityReceived}}"
-                    ]):
-                        # Find the parent page/section
-                        parent = paragraph._element
-                        while parent is not None and parent.tag != '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}body':
-                            parent = parent.getparent()
-                        if parent is not None:
-                            template_page = parent
-                            break
-                if template_page:
-                    break
-            
-            if not template_page:
-                return False, "Could not find template page with Label1 placeholders"
-                
-            logger.info("Successfully found template page structure")
-            
             # Process records in groups of 4
             for i in range(0, len(records), 4):
                 page_records = records[i:i + 4]
                 
-                # For pages after the first one, copy the template
                 if i > 0:
                     self.doc.add_page_break()
-                    new_page = deepcopy(template_page)
-                    template_page.addnext(new_page)
                 
                 # Replace placeholders for each record
                 for idx, record in enumerate(page_records, 1):
@@ -225,19 +191,21 @@ class SimpleDocumentGenerator:
                     
                     # Replace in all paragraphs and tables
                     for paragraph in self.doc.paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, str(new_text))
+                        text = paragraph._element.xml
+                        for old_text, new_text in replacements.items():
+                            if old_text in text:
+                                text = text.replace(old_text, str(new_text))
+                        paragraph._element.xml = text
                     
                     for table in self.doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
                                 for paragraph in cell.paragraphs:
-                                    for run in paragraph.runs:
-                                        for old_text, new_text in replacements.items():
-                                            if old_text in run.text:
-                                                run.text = run.text.replace(old_text, str(new_text))
+                                    text = paragraph._element.xml
+                                    for old_text, new_text in replacements.items():
+                                        if old_text in text:
+                                            text = text.replace(old_text, str(new_text))
+                                    paragraph._element.xml = text
                 
                 # Clear unused labels on the last page
                 if i + 4 > len(records):
@@ -250,19 +218,21 @@ class SimpleDocumentGenerator:
                             f'{{{{Label{idx}.QuantityReceived}}}}': '',
                         }
                         for paragraph in self.doc.paragraphs:
-                            for run in paragraph.runs:
-                                for old_text, new_text in empty_replacements.items():
-                                    if old_text in run.text:
-                                        run.text = run.text.replace(old_text, '')
+                            text = paragraph._element.xml
+                            for old_text, new_text in empty_replacements.items():
+                                if old_text in text:
+                                    text = text.replace(old_text, '')
+                            paragraph._element.xml = text
                         
                         for table in self.doc.tables:
                             for row in table.rows:
                                 for cell in row.cells:
                                     for paragraph in cell.paragraphs:
-                                        for run in paragraph.runs:
-                                            for old_text, new_text in empty_replacements.items():
-                                                if old_text in run.text:
-                                                    run.text = run.text.replace(old_text, '')
+                                        text = paragraph._element.xml
+                                        for old_text, new_text in empty_replacements.items():
+                                            if old_text in text:
+                                                text = text.replace(old_text, '')
+                                        paragraph._element.xml = text
                 
             return True, None
             
