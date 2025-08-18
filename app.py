@@ -1192,24 +1192,20 @@ def upload_csv():
 # Then, update the URL loading function
 @app.route('/load-url', methods=['POST'])
 def load_url():
+    import traceback
     try:
         url = request.form.get('url')
         if not url:
             flash('Please enter a URL')
             return redirect(url_for('index'))
-            
         result_df, format_type, raw_data = load_from_url(url)
-        
-        # Clear any existing data first
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
-            
-        # Store new data in chunks
         if not store_chunked_data('df_json', result_df):
             raise Exception("Failed to store DataFrame")
         return redirect(url_for('data_view'))
-        
     except Exception as e:
+        logger.error(f'Error loading data from URL: {str(e)}\n{traceback.format_exc()}')
         flash(f'Error loading data: {str(e)}')
         return redirect(url_for('index'))
     
@@ -1236,32 +1232,46 @@ def handle_bamboo_url(url):
 
 def load_from_url(url):
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
+    import traceback
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        content_type = response.headers.get('Content-Type', '').lower()
-        if 'application/json' in content_type or url.lower().endswith('.json'):
-            data = response.json()
-            df, format_type = parse_inventory_json(data)
-            return df, format_type, data
-        elif 'text/csv' in content_type or url.lower().endswith('.csv'):
-            df = pd.read_csv(BytesIO(response.content))
-            df, msg = process_csv_data(df)
-            return df, 'CSV', None
-        else:
-            # Try to parse as JSON first, then CSV
-            try:
-                data = response.json()
+        # Stream download for large files
+        with requests.get(url, timeout=120, stream=True) as response:
+            response.raise_for_status()
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'application/json' in content_type or url.lower().endswith('.json'):
+                # Read in chunks to avoid memory spike
+                chunks = []
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        chunks.append(chunk)
+                raw_bytes = b''.join(chunks)
+                data = json.loads(raw_bytes.decode('utf-8'))
                 df, format_type = parse_inventory_json(data)
                 return df, format_type, data
-            except Exception:
+            elif 'text/csv' in content_type or url.lower().endswith('.csv'):
+                df = pd.read_csv(response.raw)
+                df, msg = process_csv_data(df)
+                return df, 'CSV', None
+            else:
+                # Try to parse as JSON first, then CSV
                 try:
-                    df = pd.read_csv(BytesIO(response.content))
-                    df, msg = process_csv_data(df)
-                    return df, 'CSV', None
-                except Exception as e:
-                    raise ValueError(f"Unsupported data format or failed to parse: {e}")
+                    chunks = []
+                    for chunk in response.iter_content(chunk_size=1024*1024):
+                        if chunk:
+                            chunks.append(chunk)
+                    raw_bytes = b''.join(chunks)
+                    data = json.loads(raw_bytes.decode('utf-8'))
+                    df, format_type = parse_inventory_json(data)
+                    return df, format_type, data
+                except Exception:
+                    try:
+                        df = pd.read_csv(response.raw)
+                        df, msg = process_csv_data(df)
+                        return df, 'CSV', None
+                    except Exception as e:
+                        raise ValueError(f"Unsupported data format or failed to parse: {e}")
     except Exception as e:
+        logger.error(f"Failed to load data from URL: {str(e)}\n{traceback.format_exc()}")
         raise ValueError(f"Failed to load data from URL: {e}")
     
 
