@@ -331,17 +331,11 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Request timed out")
 
 def with_timeout(seconds):
+    # No-op decorator for web context; signal-based timeouts are not supported in threads
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = f(*args, **kwargs)
-            finally:
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, old_handler)
-            return result
+            return f(*args, **kwargs)
         return wrapper
     return decorator
 
@@ -1513,24 +1507,13 @@ def data_view():
         return redirect(url_for('index'))
 
 class timeout:
-    """Context manager for timeout"""
+    """No-op context manager for timeout in web context; signal-based timeouts are not supported in threads"""
     def __init__(self, seconds):
         self.seconds = seconds
-        
     def __enter__(self):
-        def handler(signum, frame):
-            raise TimeoutError("Operation timed out")
-        
-        # Handle timeouts on Unix systems
-        if hasattr(signal, 'SIGALRM'):
-            self.old_handler = signal.signal(signal.SIGALRM, handler)
-            signal.alarm(self.seconds)
-        
+        pass
     def __exit__(self, type, value, traceback):
-        # Restore signal handling
-        if hasattr(signal, 'SIGALRM'):
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, self.old_handler)
+        pass
 
 @app.route('/generate-slips', methods=['POST', 'OPTIONS'])
 @with_timeout(300)  # 5 minute timeout

@@ -332,45 +332,18 @@ class SimpleDocumentGenerator:
             raise
         
     def _replace_placeholder_text(self, paragraph, old_text, new_text):
-        """Safely replace placeholder text in a paragraph with better formatting preservation"""
-        if any(pattern in paragraph.text for pattern in [old_text, old_text.replace('.', ''), old_text.replace('.', ' ')]):
-            logger.debug(f"Found placeholder pattern matching '{old_text}' in paragraph")
-            # Get all text runs
-            runs = paragraph.runs
-            
-            # Try different placeholder formats
-            placeholder_variants = [
-                old_text,  # Original format
-                old_text.replace('.', ''),  # No dots
-                old_text.replace('.', ' ')  # Spaces instead of dots
-            ]
-            
-            for run in runs:
-                original_text = run.text
-                # Store original formatting
-                original_font = run.font
-                original_size = original_font.size
-                original_name = original_font.name
-                original_bold = run.bold
-                original_italic = run.italic
-                
-                # Try each placeholder variant
-                for variant in placeholder_variants:
-                    if variant in run.text:
-                        # Replace the text
-                        run.text = run.text.replace(variant, str(new_text))
-                        
-                        # Reapply formatting
-                        run.font.size = original_size or Pt(11)
-                        run.font.name = original_name or 'Arial'
-                        run.bold = original_bold
-                        run.italic = original_italic
-                        
-                        if run.text != original_text:
-                            logger.debug(f"Successfully replaced '{variant}' with '{new_text}'")
-                            break
-                    
-                        logger.debug(f"Replaced placeholder with '{new_text}' and preserved formatting")
+        """Replace placeholders in paragraph runs, matching old DocumentHandler logic."""
+        formats = [
+            old_text,
+            old_text.replace('.', ''),
+            old_text.replace('.', ' ')
+        ]
+        for run in paragraph.runs:
+            for fmt in formats:
+                if fmt in run.text:
+                    run.text = run.text.replace(fmt, str(new_text))
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(11)
 
     def _replace_text_in_cell(self, cell, old_text, new_text):
         """Safely replace text in a table cell with content verification"""

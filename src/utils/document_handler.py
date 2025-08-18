@@ -18,23 +18,8 @@ class TimeoutError(Exception):
 
 @contextmanager
 def timeout(seconds):
-    """Cross-platform timeout context manager"""
-    # Check if SIGALRM is available (Unix-like systems)
-    has_sigalrm = hasattr(signal, 'SIGALRM')
-    
-    if has_sigalrm:
-        def handler(signum, frame):
-            raise TimeoutError(f"Operation timed out after {seconds} seconds")
-            
-        old_handler = signal.signal(signal.SIGALRM, handler)
-        signal.alarm(seconds)
-        
-    try:
-        yield
-    finally:
-        if has_sigalrm:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+    """No-op timeout context manager for web context; signal-based timeouts are not supported in threads"""
+    yield
 
 class DocumentHandler:
     def __init__(self):
