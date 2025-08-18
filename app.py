@@ -1234,18 +1234,14 @@ def load_from_url(url):
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
     import traceback
     try:
-        # Stream download for large files
+        import ijson
         with requests.get(url, timeout=120, stream=True) as response:
             response.raise_for_status()
             content_type = response.headers.get('Content-Type', '').lower()
             if 'application/json' in content_type or url.lower().endswith('.json'):
-                # Read in chunks to avoid memory spike
-                chunks = []
-                for chunk in response.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        chunks.append(chunk)
-                raw_bytes = b''.join(chunks)
-                data = json.loads(raw_bytes.decode('utf-8'))
+                # Use ijson for streaming large JSON
+                parser = ijson.items(response.raw, 'item')
+                data = [item for item in parser]
                 df, format_type = parse_inventory_json(data)
                 return df, format_type, data
             elif 'text/csv' in content_type or url.lower().endswith('.csv'):
@@ -1253,14 +1249,9 @@ def load_from_url(url):
                 df, msg = process_csv_data(df)
                 return df, 'CSV', None
             else:
-                # Try to parse as JSON first, then CSV
                 try:
-                    chunks = []
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        if chunk:
-                            chunks.append(chunk)
-                    raw_bytes = b''.join(chunks)
-                    data = json.loads(raw_bytes.decode('utf-8'))
+                    parser = ijson.items(response.raw, 'item')
+                    data = [item for item in parser]
                     df, format_type = parse_inventory_json(data)
                     return df, format_type, data
                 except Exception:
