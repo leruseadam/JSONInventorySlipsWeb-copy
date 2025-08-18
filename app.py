@@ -13,69 +13,46 @@ import base64
 import hmac
 import hashlib
 import logging
-from logging.handlers import RotatingFileHandler
 import threading
 import tempfile
 import urllib.request
 import urllib.error
 import uuid
 import re
-import signal
-import asyncio
 import webbrowser
 import time
-import traceback
 from functools import wraps
-from io import BytesIO, StringIO
+from io import BytesIO
 import zlib
 from pathlib import Path
 from datetime import datetime
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('app.log')
-    ]
-)
-logger = logging.getLogger('app')
-
 # Third-party imports
-try:
-    from flask import (
-        Flask, 
-        render_template, 
-        request, 
-        redirect, 
-        url_for, 
-        flash, 
-        jsonify, 
-        session, 
-        send_file, 
-        send_from_directory,
-        make_response,
-        Response
-    )
-    import requests
-    import pandas as pd
-    from docxtpl import DocxTemplate
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.enum.section import WD_ORIENT
-    from docx.shared import Pt, Inches
-    from docxcompose.composer import Composer
-    import configparser
-    logger.info("Successfully imported all required packages")
-except ImportError as e:
-    logger.error(f"Failed to import required package: {str(e)}\n{traceback.format_exc()}")
-    raise
+from flask import (
+    Flask, 
+    render_template, 
+    request, 
+    redirect, 
+    url_for, 
+    flash, 
+    jsonify, 
+    session, 
+    send_file, 
+    send_from_directory
+)
+import requests
+import pandas as pd
+from docxtpl import DocxTemplate
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_ORIENT
+from docx.shared import Pt, Inches
+from docxcompose.composer import Composer
+import configparser
 from werkzeug.utils import secure_filename
 
 # Local imports
 from src.utils.document_handler import DocumentHandler
-from src.utils.docx_validator import validate_docx
 from src.ui.app import InventorySlipGenerator
 
 
@@ -191,56 +168,15 @@ def get_chunked_data(key):
         return None
 
 # Configure logging
-if 'PYTHONANYWHERE_DOMAIN' in os.environ:
-    LOG_PATH = os.path.join('/home/adamcordova/JSONInventorySlipsWeb-copy/logs')
-else:
-    LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-
-os.makedirs(LOG_PATH, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        RotatingFileHandler(
-            os.path.join(LOG_PATH, 'app.log'),
-            maxBytes=5*1024*1024,  # 5MB
-            backupCount=3
-        )
-    ]
-)
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Constants
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
-
-def get_webapp_dir():
-    """Get the absolute path to the webapp directory"""
-    if 'PYTHONANYWHERE_DOMAIN' in os.environ:
-        return '/home/adamcordova/JSONInventorySlipsWeb-copy'
-    return os.path.dirname(os.path.abspath(__file__))
-
-def ensure_dirs():
-    """Ensure all required directories exist with proper permissions"""
-    webapp_dir = get_webapp_dir()
-    dirs = [
-        os.path.join(webapp_dir, 'downloads'),
-        os.path.join(webapp_dir, 'logs'),
-        os.path.join(webapp_dir, 'templates', 'documents'),
-        os.path.join(tempfile.gettempdir(), 'inventory_generator', 'uploads')
-    ]
-    
-    for dir_path in dirs:
-        try:
-            os.makedirs(dir_path, exist_ok=True)
-            # Set write permissions
-            os.chmod(dir_path, 0o777)
-        except Exception as e:
-            logger.error(f"Failed to create/set permissions for directory {dir_path}: {e}")
+CONFIG_FILE = os.path.expanduser("~/inventory_generator_config.ini")
 
 def get_downloads_dir():
-    """Get the default downloads directory or webapp/downloads"""
+    """Get the default Downloads directory for both Windows and Mac"""
     try:
         if sys.platform == "win32":
             # First try Windows known folder path
@@ -305,9 +241,6 @@ API_CONFIGS = {
     }
 }
 
-# Create required directories
-ensure_dirs()
-
 # Initialize Flask application
 app = Flask(__name__,
     static_url_path='',
@@ -317,28 +250,9 @@ app = Flask(__name__,
 # Use a fixed secret key for development to preserve session data
 app.secret_key = 'your-fixed-development-secret-key'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # Increase to 32 MB
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
-app.config['MAX_PROCESSING_TIME'] = 300  # 5 minutes max for document generation
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # Add security headers and session configuration for Chrome compatibility
-from werkzeug.exceptions import HTTPException
-import threading
-from functools import wraps
-
-def timeout_handler(signum, frame):
-    raise TimeoutError("Request timed out")
-
-def with_timeout(seconds):
-    # No-op decorator for web context; signal-based timeouts are not supported in threads
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
-
 @app.after_request
 def add_security_headers(response):
     """Add security headers to make the app work better with Chrome"""
@@ -351,16 +265,8 @@ def add_security_headers(response):
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     
-    # Add better CORS headers
-    response.headers['Access-Control-Max-Age'] = '600'  # 10 minutes
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
-    response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
-    
-    # Add CORS headers
-    if request.headers.get('Origin'):
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin')
-    else:
-        response.headers['Access-Control-Allow-Origin'] = '*'
+    # Add CORS headers for local development
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Credentials'] = 'true'
@@ -383,23 +289,19 @@ app.config.update(
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
-    """Get absolute path to resource, works for dev, PyInstaller and PythonAnywhere"""
-    base_path = get_webapp_dir()
-    return os.path.join(base_path, relative_path)
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 # Load configurations or create default
 def load_config():
     config = configparser.ConfigParser()
-    webapp_dir = get_webapp_dir()
     
-    # Default configurations with webapp_dir interpolation
-    config['DEFAULT'] = {
-        'webapp_dir': webapp_dir
-    }
-    
+    # Default configurations
     config['PATHS'] = {
-        'template_path': '%(webapp_dir)s/templates/documents/InventorySlips.docx',
-        'output_dir': os.path.join(webapp_dir, 'downloads'),
+        'template_path': os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx"),
+        'output_dir': DEFAULT_SAVE_DIR,  # Use the new DEFAULT_SAVE_DIR
         'recent_files': '',
         'recent_urls': ''
     }
@@ -411,39 +313,13 @@ def load_config():
         'font_size': '12'
     }
     
-    try:
-        # Load existing config if it exists
-        if os.path.exists(CONFIG_FILE):
-            config.read(CONFIG_FILE)
-        
-        # Ensure output directory exists
-        os.makedirs(config['PATHS']['output_dir'], exist_ok=True)
-        
-        # Validate template path
-        template_path = config['PATHS']['template_path']
-        if not os.path.exists(template_path):
-            logger.warning(f"Template not found at {template_path}, checking alternate locations")
-            # Try alternate locations
-            alternates = [
-                os.path.join(webapp_dir, 'templates', 'documents', 'InventorySlips.docx'),
-                os.path.join(webapp_dir, 'templates', 'InventorySlips.docx'),
-                os.path.join(webapp_dir, 'InventorySlips.docx')
-            ]
-            for alt_path in alternates:
-                if os.path.exists(alt_path):
-                    config['PATHS']['template_path'] = alt_path
-                    logger.info(f"Found template at alternate location: {alt_path}")
-                    break
-            else:
-                logger.error("Could not find template file in any location")
-        
-        # Save any updates
+    # Load existing config if it exists
+    if os.path.exists(CONFIG_FILE):
+        config.read(CONFIG_FILE)
+    else:
+        # Create config file with defaults
         with open(CONFIG_FILE, 'w') as f:
             config.write(f)
-            
-    except Exception as e:
-        logger.error(f"Error loading configuration: {str(e)}")
-        # Use defaults if config loading fails
     
     return config
 
@@ -692,16 +568,14 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             if not validate_docx(temp_path):
                 raise ValueError("Generated document is corrupted")
             
-            # Move to final location and set permissions
+            # Move to final location
             import shutil
             shutil.move(temp_path, outpath)
-            set_file_permissions(outpath)
 
             # Adjust font sizes
             if status_callback:
                 status_callback("Adjusting formatting...")
             adjust_table_font_sizes(outpath)
-            set_file_permissions(outpath)  # Ensure permissions after font adjustment
 
             if progress_callback:
                 progress_callback(100)
@@ -1108,14 +982,6 @@ def cleanup_temp_files():
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
-def set_file_permissions(filepath):
-    """Set appropriate permissions for generated files"""
-    try:
-        os.chmod(filepath, 0o666)  # Read/write for everyone
-        os.chmod(os.path.dirname(filepath), 0o777)  # Full access to directory
-    except Exception as e:
-        logger.warning(f"Could not set permissions for {filepath}: {e}")
-
 def create_robust_inventory_slip(selected_df, config, status_callback=None):
     try:
         # Get vendor name
@@ -1370,30 +1236,17 @@ def handle_bamboo_url(url):
 
 def load_from_url(url):
     """Download JSON or CSV data from a URL and return as DataFrame, format_type, and raw_data."""
-    import traceback
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '').lower()
         if 'application/json' in content_type or url.lower().endswith('.json'):
-            try:
-                data = response.json()
-            except Exception as e:
-                logger.error(f"Error parsing JSON from URL: {url}\n{traceback.format_exc()}")
-                raise ValueError(f"Could not parse JSON from URL: {e}")
-            try:
-                df, format_type = parse_inventory_json(data)
-            except Exception as e:
-                logger.error(f"Error processing inventory JSON: {traceback.format_exc()}")
-                raise ValueError(f"Could not process inventory JSON: {e}")
+            data = response.json()
+            df, format_type = parse_inventory_json(data)
             return df, format_type, data
         elif 'text/csv' in content_type or url.lower().endswith('.csv'):
-            try:
-                df = pd.read_csv(BytesIO(response.content))
-                df, msg = process_csv_data(df)
-            except Exception as e:
-                logger.error(f"Error parsing CSV from URL: {url}\n{traceback.format_exc()}")
-                raise ValueError(f"Could not parse CSV from URL: {e}")
+            df = pd.read_csv(BytesIO(response.content))
+            df, msg = process_csv_data(df)
             return df, 'CSV', None
         else:
             # Try to parse as JSON first, then CSV
@@ -1401,20 +1254,14 @@ def load_from_url(url):
                 data = response.json()
                 df, format_type = parse_inventory_json(data)
                 return df, format_type, data
-            except Exception as e_json:
-                logger.error(f"Error parsing fallback JSON from URL: {url}\n{traceback.format_exc()}")
+            except Exception:
                 try:
                     df = pd.read_csv(BytesIO(response.content))
                     df, msg = process_csv_data(df)
                     return df, 'CSV', None
-                except Exception as e_csv:
-                    logger.error(f"Error parsing fallback CSV from URL: {url}\n{traceback.format_exc()}")
-                    raise ValueError(f"Unsupported data format or failed to parse. JSON error: {e_json}, CSV error: {e_csv}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error loading URL: {url}\n{traceback.format_exc()}")
-        raise ValueError(f"Network error loading URL: {e}")
+                except Exception as e:
+                    raise ValueError(f"Unsupported data format or failed to parse: {e}")
     except Exception as e:
-        logger.error(f"General error loading data from URL: {url}\n{traceback.format_exc()}")
         raise ValueError(f"Failed to load data from URL: {e}")
     
 
@@ -1435,8 +1282,7 @@ def data_view():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                    from io import StringIO
-                    df = pd.read_json(StringIO(df_json), orient='records')
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -1506,238 +1352,92 @@ def data_view():
         flash('Error loading data. Please try again.')
         return redirect(url_for('index'))
 
-class timeout:
-    """No-op context manager for timeout in web context; signal-based timeouts are not supported in threads"""
-    def __init__(self, seconds):
-        self.seconds = seconds
-    def __enter__(self):
-        pass
-    def __exit__(self, type, value, traceback):
-        pass
-
-@app.route('/generate-slips', methods=['POST', 'OPTIONS'])
-@with_timeout(300)  # 5 minute timeout
+@app.route('/generate-slips', methods=['POST'])
 def generate_slips():
-    """Generate inventory slips using simple document generation with improved error handling"""
-    # Handle preflight OPTIONS request
-    if request.method == 'OPTIONS':
-        response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '600')  # 10 minutes
-        return response
-        
-    # Set up response headers for streaming
-    response = Response(status=200)
-    response.headers['Content-Type'] = 'application/octet-stream'
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['X-Accel-Buffering'] = 'no'
+    """Generate inventory slips using the original template-based method"""
     try:
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
         
         if not selected_indices:
-            return jsonify({'error': 'No products selected'}), 400
+            flash('No products selected.')
+            return redirect(url_for('data_view'))
         
         # Convert indices to integers
         selected_indices = [int(idx) for idx in selected_indices]
         logger.info(f"Selected indices: {selected_indices}")
         
-        # Load data from session using chunked data with timeout
+        # Load data from session using chunked data
         df_json = get_chunked_data('df_json')
         
         if df_json is None:
-            return jsonify({'error': 'No data available. Please load data first.'}), 400
+            flash('No data available. Please load data first.')
+            return redirect(url_for('index'))
         
-        # Convert JSON to DataFrame with memory management
+        # Convert JSON to DataFrame
         try:
-            # Handle both list and string JSON formats
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                try:
-                    from io import StringIO
-                    df = pd.read_json(StringIO(df_json), orient='records')
-                except Exception as e:
-                    logger.error(f"Failed to parse JSON data: {str(e)}")
-                    # Try parsing as string
-                    import json
-                    try:
-                        parsed_data = json.loads(df_json)
-                        df = pd.DataFrame(parsed_data)
-                    except Exception as e2:
-                        logger.error(f"Failed to parse JSON string: {str(e2)}")
-                        raise ValueError("Could not parse data format")
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
-            return jsonify({'error': 'Error loading data. Please try again.'}), 500
+            flash('Error loading data. Please try again.')
+            return redirect(url_for('data_view'))
         
         logger.info(f"DataFrame shape: {df.shape}")
         logger.info(f"DataFrame columns: {df.columns.tolist()}")
         
-        # Get only selected rows with validation
-        try:
-            selected_df = df.iloc[selected_indices].copy()
-            if selected_df.empty:
-                return jsonify({'error': 'No valid records selected'}), 400
-        except Exception as e:
-            logger.error(f"Error selecting records: {str(e)}")
-            return jsonify({'error': 'Invalid selection'}), 400
-            
+        # Get only selected rows
+        selected_df = df.iloc[selected_indices].copy()
         logger.info(f"Selected DataFrame shape: {selected_df.shape}")
         
         # Load configuration
         config = load_config()
         
-        # Use a thread pool for document generation
-        def generate_doc():
-            try:
-                from src.utils.simple_document_generator import SimpleDocumentGenerator
-                
-                # Get vendor name from first row
-                vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
-                today_date = datetime.now().strftime("%Y%m%d")
-                
-                # Clean vendor name for filename
-                vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
-                
-                # Create filename with unique identifier
-                unique_id = uuid.uuid4().hex[:8]
-                outname = f"{today_date}_{vendor_name}_{unique_id}_Slips.docx"
-                outpath = os.path.join(config['PATHS']['output_dir'], outname)
-                
-                # Prepare records with validation
-                records = []
-                for _, row in selected_df.iterrows():
-                    try:
-                        qty = row.get('Quantity Received*', 0)
-                        qty = int(round(float(qty))) if str(qty).strip() else 0
-                    except (ValueError, TypeError):
-                        qty = 0
-                        
-                    vendor = row.get('Vendor', '')
-                    if ' - ' in vendor:
-                        vendor = vendor.split(' - ')[1]
-                        
-                    # Validate and clean record data
-                    record = {
-                        'ProductName': str(row.get('Product Name*', ''))[:100].strip(),
-                        'Barcode': str(row.get('Barcode*', ''))[:50].strip(),
-                        'AcceptedDate': str(row.get('Accepted Date', ''))[:20].strip(),
-                        'QuantityReceived': str(qty),
-                        'Vendor': str(vendor or 'Unknown Vendor')[:50].strip()
-                    }
-                    
-                    # Only add record if it has required fields
-                    if record['ProductName'] and record['Barcode']:
-                        records.append(record)
-                
-                if not records:
-                    raise ValueError("No valid records to process")
-                
-                # Generate document with progress tracking
-                # Log template location
-                webapp_dir = get_webapp_dir()
-                template_paths = [
-                    os.path.join(webapp_dir, 'templates', 'documents', 'InventorySlips.docx'),
-                    os.path.join(webapp_dir, 'templates', 'InventorySlips.docx'),
-                    os.path.join(webapp_dir, 'InventorySlips.docx')
-                ]
-                
-                template_path = None
-                for path in template_paths:
-                    logger.info(f"Checking template path: {path}")
-                    if os.path.exists(path):
-                        template_path = path
-                        logger.info(f"Using template at: {template_path}")
-                        break
-                        
-                if not template_path:
-                    raise ValueError(f"Template file not found in any location. Tried: {', '.join(template_paths)}")
-                
-                generator = SimpleDocumentGenerator(template_path)
-                logger.info("Generating document...")
-                success, error = generator.generate_document(records)
-                
-                if success:
-                    # Save with validation
-                    logger.info(f"Saving document to: {outpath}")
-                    success, error = generator.save(outpath)
-                    if success and os.path.exists(outpath):
-                        logger.info("Validating generated document...")
-                        if validate_docx(outpath):
-                            logger.info("Document validation successful")
-                            return outpath
-                        else:
-                            os.remove(outpath)
-                            raise ValueError("Generated document failed validation")
-                    else:
-                        raise ValueError(f"Failed to save document: {error}")
-                else:
-                    raise ValueError(f"Failed to generate document: {error}")
-                    
-            except Exception as e:
-                logger.error(f"Document generation error: {str(e)}")
-                raise
+        # Generate the file
+        status_messages = []
+        progress_values = []
         
-        # Execute document generation with timeout
-        try:
-            with timeout(app.config['MAX_PROCESSING_TIME']):
-                result = generate_doc()
-                
-                response = send_file(
-                    result,
-                    as_attachment=True,
-                    download_name=os.path.basename(result),
-                    mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                )
-                
-                # Add comprehensive CORS and caching headers
-                response.headers.update({
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-                    'Access-Control-Expose-Headers': 'Content-Disposition',
-                    'Cache-Control': 'no-cache, no-store, must-revalidate',
-                    'Pragma': 'no-cache',
-                    'Expires': '0'
-                })
-                
-                return response
-                
-        except TimeoutError:
-            return jsonify({'error': 'Document generation timed out. Please try with fewer records.'}), 504
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+        def status_callback(msg):
+            status_messages.append(msg)
+            logger.info(f"Status: {msg}")
+        
+        def progress_callback(value):
+            progress_values.append(value)
+        
+        logger.info("Starting document generation...")
+        success, result = run_full_process_inventory_slips(
+            selected_df,
+            config,
+            status_callback,
+            progress_callback
+        )
+        
+        if success:
+            logger.info(f"Document generated successfully: {result}")
+            # Validate the generated file
+            if not validate_docx(result):
+                logger.error("Generated document failed validation")
+                flash('Generated document appears to be corrupted. Please try again.')
+                return redirect(url_for('data_view'))
+            
+            # Return the file for download
+            return send_file(
+                result,
+                as_attachment=True,
+                download_name=os.path.basename(result),
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            )
+        else:
+            logger.error(f"Document generation failed: {result}")
+            flash(f'Failed to generate inventory slips: {result}')
+            return redirect(url_for('data_view'))
     
     except Exception as e:
         logger.error(f"Error in generate_slips: {str(e)}", exc_info=True)
-        return jsonify({
-            'error': 'Internal server error occurred',
-            'details': str(e)
-        }), 500
-
-@app.errorhandler(500)
-def handle_500_error(e):
-    return jsonify({
-        'error': 'Internal server error occurred',
-        'details': str(e)
-    }), 500
-
-@app.errorhandler(502)
-def handle_502_error(e):
-    return jsonify({
-        'error': 'Bad Gateway',
-        'details': 'The server encountered a temporary error. Please try again.'
-    }), 502
-
-@app.errorhandler(504)
-def handle_504_error(e):
-    return jsonify({
-        'error': 'Gateway Timeout',
-        'details': 'The operation timed out. Please try with fewer records.'
-    }), 504
+        flash(f'Error generating slips: {str(e)}')
+        return redirect(url_for('data_view'))
 
 # To this:
 @app.route('/generate_robust_slips_docx', methods=['POST'])
@@ -1767,8 +1467,7 @@ def generate_robust_slips_docx():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                from io import StringIO
-                df = pd.read_json(StringIO(df_json), orient='records')
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
