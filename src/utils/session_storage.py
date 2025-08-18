@@ -22,84 +22,47 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 def _get_temp_filepath(key: str, session_id: str) -> str:
     """Get the temporary file path for a given key and session."""
-    # Create a unique filename based on session ID and key
-    filename = f"{session_id}_{key}_{uuid.uuid4().hex[:8]}.tmp"
-    return os.path.join(TEMP_DIR, filename)
+    return os.path.join(TEMP_DIR, f"{key}_{session_id}.tmp")
 
 def store_data(key: str, data: Any, session_id: str) -> bool:
-    """
-    Store data in a temporary file with compression.
-    Returns True if successful, False otherwise.
-    """
+    """Store large data in a temp file."""
     try:
-        # Convert data to JSON string
-        if not isinstance(data, str):
-            data = json.dumps(data)
-            
-        # Compress the data
-        compressed = zlib.compress(data.encode('utf-8'), level=9)
-        
-        # Get temporary file path
         filepath = _get_temp_filepath(key, session_id)
-        
-        # Write compressed data to file
-        with open(filepath, 'wb') as f:
+        with open(filepath, "wb") as f:
+            data_str = data if isinstance(data, str) else json.dumps(data)
+            compressed = zlib.compress(data_str.encode("utf-8"), level=9)
             f.write(compressed)
-            
-        # Store only the reference in session
-        return filepath
-        
+        return True
     except Exception as e:
-        logger.error(f"Error storing data: {str(e)}")
-        return None
+        logger.error(f"Error storing data in temp file: {str(e)}")
+        return False
 
 def get_data(filepath: str) -> Optional[Any]:
-    """
-    Retrieve and decompress data from temporary file.
-    Returns None if file doesn't exist or on error.
-    """
+    """Retrieve and decompress data from a temp file."""
     try:
-        if not os.path.exists(filepath):
-            return None
-            
-        # Read and decompress data
-        with open(filepath, 'rb') as f:
+        with open(os.path.join(TEMP_DIR, filepath), "rb") as f:
             compressed = f.read()
-        
-        decompressed = zlib.decompress(compressed)
-        data = decompressed.decode('utf-8')
-        
-        # Parse JSON if possible
-        try:
-            return json.loads(data)
-        except:
-            return data
-            
+            decompressed = zlib.decompress(compressed)
+            return decompressed.decode("utf-8")
     except Exception as e:
-        logger.error(f"Error retrieving data: {str(e)}")
+        logger.error(f"Error reading data from temp file: {str(e)}")
         return None
 
 def cleanup_old_files() -> None:
     """Remove temporary files older than MAX_AGE_HOURS."""
-    try:
-        current_time = datetime.now()
-        for filename in os.listdir(TEMP_DIR):
-            filepath = os.path.join(TEMP_DIR, filename)
-            file_modified = datetime.fromtimestamp(os.path.getmtime(filepath))
-            
-            if current_time - file_modified > timedelta(hours=MAX_AGE_HOURS):
-                try:
-                    os.remove(filepath)
-                    logger.info(f"Removed old temporary file: {filename}")
-                except:
-                    pass
-    except Exception as e:
-        logger.error(f"Error during cleanup: {str(e)}")
+    now = datetime.now()
+    for fname in os.listdir(TEMP_DIR):
+        fpath = os.path.join(TEMP_DIR, fname)
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(fpath))
+            if now - mtime > timedelta(hours=MAX_AGE_HOURS):
+                os.remove(fpath)
+        except Exception as e:
+            logger.warning(f"Could not remove temp file {fpath}: {e}")
 
 def remove_data(filepath: str) -> None:
     """Remove a specific temporary file."""
     try:
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        os.remove(os.path.join(TEMP_DIR, filepath))
     except Exception as e:
-        logger.error(f"Error removing file {filepath}: {str(e)}")
+        logger.warning(f"Could not remove temp file {filepath}: {e}")

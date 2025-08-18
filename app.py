@@ -57,8 +57,8 @@ from src.ui.app import InventorySlipGenerator
 
 
 # Update the compression constants
-MAX_CHUNK_SIZE = 500  # Reduced from 800 to be safer
-MAX_TOTAL_SIZE = 3000  # Maximum total size after compression
+MAX_CHUNK_SIZE = 5000  # Increased to allow larger chunks
+MAX_TOTAL_SIZE = 20000  # Increased to allow larger total size
 COMPRESSION_LEVEL = 9  # Maximum compression
 
 def compress_session_data(data):
@@ -103,48 +103,51 @@ def compress_session_data(data):
 
 def store_chunked_data(key, data):
     """Store data with improved chunking and size validation"""
+    import uuid
+    from src.utils.session_storage import store_data
+    session_id = session.get('session_id', str(uuid.uuid4()))
+    session['session_id'] = session_id
     try:
-        # Compress data first
+        data_str = data if isinstance(data, str) else json.dumps(data)
+        if len(data_str) > MAX_TOTAL_SIZE:
+            # Store in temp file
+            store_data(key, data, session_id)
+            session[key + '_filepath'] = f"{key}_{session_id}.tmp"
+            logger.info(f"Stored large data for {key} in temp file.")
+            return True
+        # Otherwise, store in session as before
         compressed = compress_session_data(data)
-        
-        # Clear existing chunks
         clear_chunked_data(key)
-        
-        # Split into smaller chunks
         chunks = [compressed[i:i + MAX_CHUNK_SIZE] for i in range(0, len(compressed), MAX_CHUNK_SIZE)]
-        
-        if len(chunks) > 20:  # Limit number of chunks
+        if len(chunks) > 20:
             raise ValueError(f"Data too large: {len(chunks)} chunks needed")
-        
-        # Store chunks with size validation
         session[f'{key}_chunks'] = len(chunks)
         for i, chunk in enumerate(chunks):
             chunk_key = f'{key}_chunk_{i}'
             if len(chunk) > MAX_CHUNK_SIZE:
                 raise ValueError(f"Chunk {i} exceeds maximum size")
             session[chunk_key] = chunk
-            
         logger.info(f"Stored {len(chunks)} chunks for {key} (total size: {len(compressed)})")
         return True
-        
     except Exception as e:
         logger.error(f"Error storing chunked data: {str(e)}")
-        clear_chunked_data(key)  # Clean up on error
+        clear_chunked_data(key)
         return False
 
 def get_chunked_data(key):
     """Retrieve chunked data with improved error handling"""
+    from src.utils.session_storage import get_data
+    session_id = session.get('session_id')
+    filepath_key = key + '_filepath'
+    if filepath_key in session:
+        return get_data(session[filepath_key])
     try:
         num_chunks = session.get(f'{key}_chunks')
         if num_chunks is None:
             return None
-            
-        # Validate chunk count
-        if num_chunks > 20:  # Safety check
+        if num_chunks > 20:
             logger.error(f"Too many chunks for {key}: {num_chunks}")
             return None
-            
-        # Reconstruct data
         chunks = []
         for i in range(num_chunks):
             chunk = session.get(f'{key}_chunk_{i}')
@@ -152,8 +155,6 @@ def get_chunked_data(key):
                 logger.error(f"Invalid chunk {i} for {key}")
                 return None
             chunks.append(chunk)
-            
-        # Combine and decompress
         encoded_data = ''.join(chunks)
         try:
             compressed = base64.b64decode(encoded_data)
@@ -162,7 +163,6 @@ def get_chunked_data(key):
         except Exception as e:
             logger.error(f"Decompression error: {str(e)}")
             return None
-            
     except Exception as e:
         logger.error(f"Error retrieving chunked data: {str(e)}")
         return None
