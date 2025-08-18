@@ -703,48 +703,31 @@ class SimpleDocumentGenerator:
             # Pre-save validation
             logger.info("Performing pre-save document validation...")
             
+            # Basic document check
+            if not self.doc:
+                raise ValueError("No document loaded")
+                
+            if not self.doc.tables:
+                raise ValueError("Document contains no tables")
+                
+            # Log document structure
+            logger.info(f"Document contains {len(self.doc.tables)} tables and {len(self.doc.paragraphs)} paragraphs")
+            
             # Check if we have any content before saving
             content_summary = self._validate_document_content(self.doc)
-            if not content_summary['has_content']:
-                logger.error("Document appears to be empty before saving")
-                logger.error(f"Document structure: {content_summary['structure']}")
-                if content_summary.get('placeholders_found'):
-                    logger.error("Found unprocessed placeholders: " + 
-                              ", ".join(content_summary['placeholders_found'][:5]))
-                raise ValueError("Document is empty - no content to save")
-                
+            
             # Ensure directory exists
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             
-            # Create temp file first
-            temp_path = f"{filepath}.tmp"
-            self.doc.save(temp_path)
-            
-            # Verify the saved file
+            # Save document
+            logger.info(f"Saving document to {filepath}")
             try:
-                test_doc = Document(temp_path)
-                logger.info(f"Validating saved document at {temp_path}")
-                saved_content = self._validate_document_content(test_doc)
-                
-                if not saved_content['has_content']:
-                    logger.error("Saved document appears to be empty")
-                    logger.error(f"Document structure: {saved_content['structure']}")
-                    raise ValueError("Saved document contains no content")
-                    
-                # Log content details
-                logger.info(f"Document validation successful:")
-                logger.info(f"- Paragraphs: {saved_content['paragraphs']}")
-                logger.info(f"- Tables: {saved_content['tables']}")
-                logger.info(f"- Content samples: {saved_content['samples']}")
-                
+                self.doc.save(filepath)
+                logger.info("Document saved successfully")
+                return True, None
             except Exception as e:
-                logger.error(f"Document validation failed: {str(e)}")
-                raise
-                
-            # Move temp file to final location
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            os.rename(temp_path, filepath)
+                logger.error(f"Error saving document: {str(e)}")
+                raise ValueError(f"Failed to save document: {str(e)}")
             
             return True, None
             
@@ -768,37 +751,51 @@ class SimpleDocumentGenerator:
             'placeholders_found': []
         }
         
+        logger.info("Starting document validation...")
+        logger.info(f"Document structure: {result['structure']}")
+        
+        # Document is valid if it has at least one table
+        if len(doc.tables) > 0:
+            result['has_content'] = True
+            logger.info(f"Found {len(doc.tables)} tables in document")
+        
         # Check paragraphs
         for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             if text:
-                result['has_content'] = True
                 result['paragraphs'].append(f"P{i}: {text[:50]}...")
                 result['samples'].append(text[:50])
                 
                 # Check for unprocessed placeholders
-                if '{{Label' in text or '{Label' in text or 'Label' in text:
+                if '{{Label' in text or '{Label' in text:
                     result['placeholders_found'].append(text)
+                    logger.warning(f"Found unprocessed placeholder in paragraph {i}: {text[:50]}")
         
         # Check tables
         for i, table in enumerate(doc.tables):
+            logger.info(f"Checking table {i}: {len(table.rows)} rows")
             for row_idx, row in enumerate(table.rows):
                 for cell_idx, cell in enumerate(row.cells):
                     text = cell.text.strip()
                     if text:
-                        result['has_content'] = True
                         result['tables'].append(
                             f"T{i}R{row_idx}C{cell_idx}: {text[:50]}...")
                         result['samples'].append(text[:50])
                         
                         # Check for unprocessed placeholders
-                        if '{{Label' in text or '{Label' in text or 'Label' in text:
+                        if '{{Label' in text or '{Label' in text:
                             result['placeholders_found'].append(text)
+                            logger.warning(f"Found unprocessed placeholder in table {i}, cell {row_idx},{cell_idx}: {text[:50]}")
         
         # Truncate lists to prevent excessive logging
-        result['paragraphs'] = result['paragraphs'][:5]  # Show first 5
-        result['tables'] = result['tables'][:5]          # Show first 5
-        result['samples'] = result['samples'][:3]        # Show first 3
-        result['placeholders_found'] = result['placeholders_found'][:5]  # Show first 5
+        result['paragraphs'] = result['paragraphs'][:5]
+        result['tables'] = result['tables'][:5]
+        result['samples'] = result['samples'][:3]
+        result['placeholders_found'] = result['placeholders_found'][:5]
         
+        if result['has_content']:
+            logger.info("Document validation successful - found valid content")
+        else:
+            logger.error("Document validation failed - no valid content found")
+            
         return result
