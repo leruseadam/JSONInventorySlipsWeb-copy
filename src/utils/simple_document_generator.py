@@ -290,7 +290,7 @@ class SimpleDocumentGenerator:
                           right="single")
             
             # Set cell vertical alignment to center
-            from docx.enum.text import WD_ALIGN_VERTICAL
+            from docx.enum.table import WD_ALIGN_VERTICAL
             cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
             
             # Verify content was added
