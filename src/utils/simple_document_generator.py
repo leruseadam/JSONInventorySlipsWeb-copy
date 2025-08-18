@@ -474,26 +474,36 @@ class SimpleDocumentGenerator:
             records_processed = 0
             format_samples = []
             
+            # Get existing tables from template
+            if not self.doc.tables:
+                raise ValueError("No tables found in template")
+
+            tables_per_page = len(self.doc.tables)
+            logger.info(f"Found {tables_per_page} tables in template")
+            
+            # Calculate how many pages we need
+            total_pages = (len(records) + 3) // 4
+            current_tables = self.doc.tables[:]  # Make a copy of the original tables
+            
             for i in range(0, len(records), 4):
                 logger.info(f"Processing page {page_number}")
                 
-                # Add page break between pages (except first page)
-                if i > 0:
+                # If we need more pages, add a page break and copy the template tables
+                if page_number > 1:
                     self.doc.add_page_break()
-                
-                # Create table for this page
-                table = self.doc.add_table(rows=4, cols=1)
-                table.style = 'Table Grid'
-                table.autofit = False
-                
-                # Set column width
-                for cell in table.columns[0].cells:
-                    cell.width = Inches(7.5)
+                    for template_table in current_tables:
+                        new_table = deepcopy(template_table._element)
+                        self.doc._body._body.append(new_table)
                 
                 # Process records for this page
                 page_records = records[i:i + 4]
+                table_idx = (page_number - 1) * tables_per_page
+                
                 for row_idx, record in enumerate(page_records):
                     try:
+                        # Get current table
+                        table = self.doc.tables[table_idx]
+                        
                         # Prepare cell data
                         vendor = record.get('Vendor', 'Unknown')
                         if ' - ' in vendor:
@@ -508,7 +518,8 @@ class SimpleDocumentGenerator:
                         }
                         
                         # Get cell and add content
-                        cell = table.rows[row_idx].cells[0]
+                        if row_idx < len(table.rows):
+                            cell = table.rows[row_idx].cells[0]
                         if self._add_label(cell, cell_data):
                             records_processed += 1
                             logger.info(f"Added label {records_processed} (Page {page_number}, Row {row_idx + 1})")
