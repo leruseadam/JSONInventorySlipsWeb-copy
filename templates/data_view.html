@@ -153,41 +153,19 @@
 </div>
 
     <!-- Progress Modal -->
-    <div class="modal fade" id="progressModal" data-bs-backdrop="static" role="dialog" aria-labelledby="progressModalTitle" aria-modal="true">
+    <div class="modal fade" id="progressModal" data-bs-backdrop="static" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="progressModalTitle">Generating Inventory Slips</h5>
+                    <h5 class="modal-title">Generating Inventory Slips</h5>
                 </div>
                 <div class="modal-body">
                     <div class="progress mb-3">
                         <div class="progress-bar progress-bar-striped progress-bar-animated" 
                              role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-                            <span class="visually-hidden">0% Complete</span>
                         </div>
                     </div>
-                    <p class="text-center mb-0" id="progressText" aria-live="polite">Initializing...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Error Modal -->
-    <div class="modal fade" id="errorModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header bg-danger text-white">
-                    <h5 class="modal-title" id="errorModalTitle">Error</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="alert alert-danger mb-0">
-                        <p id="errorModalMessage"></p>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                    <button type="button" class="btn btn-primary" onclick="retryLastOperation()">Retry</button>
+                    <p class="text-center mb-0" id="progressText">Initializing...</p>
                 </div>
             </div>
         </div>
@@ -200,19 +178,10 @@ let progressModal;
 let progressBar;
 let progressText;
 
-let errorModal;
-let lastOperation = null;
-
 document.addEventListener('DOMContentLoaded', function() {
     progressModal = new bootstrap.Modal(document.getElementById('progressModal'));
-    errorModal = new bootstrap.Modal(document.getElementById('errorModal'));
     progressBar = document.querySelector('.progress-bar');
     progressText = document.getElementById('progressText');
-
-    // Add error handling for all AJAX requests
-    $(document).ajaxError(function(event, jqXHR, settings, error) {
-        handleAjaxError(jqXHR, error);
-    });
 
     // Initialize search functionality
     const searchInput = document.getElementById('searchInput');
@@ -290,50 +259,6 @@ function updateProgress(percent, text) {
     }
 }
 
-function showErrorModal(title, message) {
-    document.getElementById('errorModalTitle').textContent = title;
-    document.getElementById('errorModalMessage').textContent = message;
-    if (errorModal) {
-        errorModal.show();
-    }
-}
-
-function retryLastOperation() {
-    if (errorModal) {
-        errorModal.hide();
-    }
-    if (lastOperation === 'generate') {
-        generateSlips();
-    } else if (lastOperation === 'robust') {
-        generateRobustSlips();
-    }
-}
-
-function handleAjaxError(xhr, error) {
-    let errorMessage = '';
-    try {
-        const response = JSON.parse(xhr.responseText);
-        errorMessage = response.details || response.error || error;
-    } catch (e) {
-        errorMessage = xhr.responseText || error || 'An unknown error occurred';
-    }
-
-    // Handle specific status codes
-    switch (xhr.status) {
-        case 502:
-            errorMessage = 'The server is temporarily unavailable. Please try again in a few moments.';
-            break;
-        case 504:
-            errorMessage = 'The operation timed out. Please try with fewer records or try again later.';
-            break;
-        case 413:
-            errorMessage = 'The selected data is too large. Please try with fewer records.';
-            break;
-    }
-
-    showErrorModal('Error', errorMessage);
-}
-
 function generateSlips() {
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
@@ -360,17 +285,7 @@ function generateSlips() {
     })
     .then(function(response) {
         if (!response.ok) {
-            // Try to get error details from response
-            return response.text().then(text => {
-                try {
-                    // Try to parse as JSON first
-                    const error = JSON.parse(text);
-                    throw new Error(error.message || error.error || text);
-                } catch (e) {
-                    // If not JSON, use the text as is
-                    throw new Error(text || `Server error (${response.status})`);
-                }
-            });
+            throw new Error('Network response was not ok');
         }
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
@@ -406,26 +321,7 @@ function generateSlips() {
         if (progressModal) {
             progressModal.hide();
         }
-        // Show a more detailed error message
-        updateProgress(0, 'Generation failed');
-        
-        // Try to parse the error response
-        if (error.response) {
-            error.response.json().then(function(data) {
-                const errorDetails = data.details || data.error || error.message;
-                showErrorModal('Document Generation Error', errorDetails);
-            }).catch(function() {
-                // If can't parse JSON, show raw text
-                error.response.text().then(function(text) {
-                    showErrorModal('Document Generation Error', text);
-                }).catch(function() {
-                    showErrorModal('Document Generation Error', error.message || 'Unknown error occurred');
-                });
-            });
-        } else {
-            showErrorModal('Document Generation Error', error.message || 'Network error occurred');
-        }
-        console.error('Document generation error:', error);
+        alert('Error generating slips: ' + error.message);
     });
 }
 

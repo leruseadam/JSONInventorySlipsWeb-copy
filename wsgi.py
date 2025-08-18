@@ -4,21 +4,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import traceback
 
-# Configure paths for both local and PythonAnywhere environments
-if 'PYTHONANYWHERE_DOMAIN' in os.environ:
-    # PythonAnywhere path
-    WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'
-else:
-    # Local development path
-    WEBAPP_PATH = os.path.dirname(os.path.abspath(__file__))
-
-LOG_PATH = os.path.join(WEBAPP_PATH, 'logs')
-
-# Create logs directory if it doesn't exist
-try:
-    os.makedirs(LOG_PATH, exist_ok=True)
-except Exception as e:
-    print(f"Warning: Could not create logs directory: {e}")
+# Configure paths
+WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'
 
 # Configure logging
 logging.basicConfig(
@@ -26,21 +13,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        RotatingFileHandler(
-            os.path.join(LOG_PATH, 'wsgi.log'),
-            maxBytes=5*1024*1024,  # 5MB
-            backupCount=3
-        )
+        logging.FileHandler(os.path.join(WEBAPP_PATH, 'wsgi.log'))
     ]
 )
 logger = logging.getLogger('wsgi')
 
-# Log important environment information
-logger.info(f"WEBAPP_PATH: {WEBAPP_PATH}")
-logger.info(f"Python version: {sys.version}")
-logger.info(f"Current working directory: {os.getcwd()}")
-
 # Add application directory to Python path
+os.environ['GUNICORN_CMD_ARGS'] = '--timeout 600'
 if WEBAPP_PATH not in sys.path:
     sys.path.insert(0, WEBAPP_PATH)
     logger.info(f'Added {WEBAPP_PATH} to Python path')

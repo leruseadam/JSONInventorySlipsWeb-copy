@@ -431,7 +431,10 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         today_date = datetime.now().strftime("%Y%m%d")
         # Create filename
         outname = f"{today_date}_{vendor_name}_Slips.docx"
-        outpath = os.path.join(config['PATHS']['output_dir'], outname)
+        output_dir = config['PATHS']['output_dir']
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        outpath = os.path.join(output_dir, outname)
         
         # ...rest of existing code...
         
@@ -572,14 +575,30 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             import shutil
             shutil.move(temp_path, outpath)
 
+            # Add page numbers to footer
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            def add_page_number(footer):
+                paragraph = footer.paragraphs[0]
+                run = paragraph.add_run()
+                fldChar1 = OxmlElement('w:fldChar')
+                fldChar1.set(qn('w:fldCharType'), 'begin')
+                instrText = OxmlElement('w:instrText')
+                instrText.text = 'PAGE'
+                fldChar2 = OxmlElement('w:fldChar')
+                fldChar2.set(qn('w:fldCharType'), 'end')
+                run._r.append(fldChar1)
+                run._r.append(instrText)
+                run._r.append(fldChar2)
+            for section in master.sections:
+                add_page_number(section.footer)
+            master.save(temp_path)
             # Adjust font sizes
             if status_callback:
                 status_callback("Adjusting formatting...")
             adjust_table_font_sizes(outpath)
-
             if progress_callback:
                 progress_callback(100)
-
             return True, outpath
 
         except Exception as e:
@@ -750,31 +769,41 @@ def parse_inventory_json(json_data):
     Returns tuple of (DataFrame, format_type)
     """
     if not json_data:
+        logger.info("No data provided to parse_inventory_json.")
+        print("No data provided to parse_inventory_json.")
         return None, "No data provided"
-    
     try:
-        # Parse string to JSON if needed
         if isinstance(json_data, str):
             json_data = json.loads(json_data)
-            
         # Try parsing as Bamboo
         if "inventory_transfer_items" in json_data:
-            return parse_bamboo_data(json_data), "Bamboo"
-            
-        # Try parsing as Cultivera 
+            df = parse_bamboo_data(json_data)
+            logger.info(f"Parsed Bamboo format, records: {len(df) if df is not None else 0}")
+            print(f"Parsed Bamboo format, records: {len(df) if df is not None else 0}")
+            return df, "Bamboo"
+        # Try parsing as Cultivera
         elif "data" in json_data and isinstance(json_data["data"], dict) and "manifest" in json_data["data"]:
-            return parse_cultivera_data(json_data), "Cultivera"
-            
+            df = parse_cultivera_data(json_data)
+            logger.info(f"Parsed Cultivera format, records: {len(df) if df is not None else 0}")
+            print(f"Parsed Cultivera format, records: {len(df) if df is not None else 0}")
+            return df, "Cultivera"
         # Try parsing as GrowFlow
         elif "document_schema_version" in json_data:
-            return parse_growflow_data(json_data), "GrowFlow"
-            
+            df = parse_growflow_data(json_data)
+            logger.info(f"Parsed GrowFlow format, records: {len(df) if df is not None else 0}")
+            print(f"Parsed GrowFlow format, records: {len(df) if df is not None else 0}")
+            return df, "GrowFlow"
         else:
+            logger.info("Unknown JSON format in parse_inventory_json.")
+            print("Unknown JSON format in parse_inventory_json.")
             return None, "Unknown JSON format"
-            
     except json.JSONDecodeError:
+        logger.error("Invalid JSON data in parse_inventory_json.")
+        print("Invalid JSON data in parse_inventory_json.")
         return None, "Invalid JSON data"
     except Exception as e:
+        logger.error(f"Error parsing data in parse_inventory_json: {str(e)}")
+        print(f"Error parsing data in parse_inventory_json: {str(e)}")
         return None, f"Error parsing data: {str(e)}"
 
 # Process CSV data
@@ -1193,21 +1222,30 @@ def upload_csv():
 @app.route('/load-url', methods=['POST'])
 def load_url():
     import traceback
+    print("Entered load_url route")
     try:
         url = request.form.get('url')
+        print(f"URL received: {url}")
         if not url:
+            print("No URL provided")
             flash('Please enter a URL')
             return redirect(url_for('index'))
         result_df, format_type, raw_data = load_from_url(url)
+        print(f"Result DataFrame: {result_df}")
+        print(f"Format type: {format_type}")
+        print(f"Raw data: {str(raw_data)[:500]}")
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
         if not store_chunked_data('df_json', result_df):
+            print("Failed to store DataFrame")
             raise Exception("Failed to store DataFrame")
+        print("Redirecting to data_view")
         return redirect(url_for('data_view'))
     except Exception as e:
         logger.error(f'Error loading data from URL: {str(e)}\n{traceback.format_exc()}')
+        print(f"Error loading data from URL: {str(e)}\n{traceback.format_exc()}")
         flash(f'Error loading data: {str(e)}')
-        return redirect(url_for('index'))
+    return redirect(url_for('index'))
     
 def handle_bamboo_url(url):
     try:
@@ -1238,22 +1276,41 @@ def load_from_url(url):
         with requests.get(url, timeout=120, stream=True) as response:
             response.raise_for_status()
             content_type = response.headers.get('Content-Type', '').lower()
+            raw_text = response.text
+            print(f"Raw response (first 500 chars): {raw_text[:500]}")
+            # Decide how to parse based on first non-whitespace character
+            first_char = raw_text.lstrip()[0] if raw_text.lstrip() else ''
             if 'application/json' in content_type or url.lower().endswith('.json'):
-                # Use ijson for streaming large JSON
-                parser = ijson.items(response.raw, 'item')
-                data = [item for item in parser]
-                df, format_type = parse_inventory_json(data)
-                return df, format_type, data
+                if first_char == '{':
+                    # Top-level object, use json.loads
+                    data = json.loads(raw_text)
+                    df, format_type = parse_inventory_json(data)
+                    return df, format_type, data
+                elif first_char == '[':
+                    # Top-level array, use ijson
+                    parser = ijson.items(response.raw, 'item')
+                    data = [item for item in parser]
+                    df, format_type = parse_inventory_json(data)
+                    return df, format_type, data
+                else:
+                    raise ValueError("Unknown JSON structure")
             elif 'text/csv' in content_type or url.lower().endswith('.csv'):
                 df = pd.read_csv(response.raw)
                 df, msg = process_csv_data(df)
                 return df, 'CSV', None
             else:
                 try:
-                    parser = ijson.items(response.raw, 'item')
-                    data = [item for item in parser]
-                    df, format_type = parse_inventory_json(data)
-                    return df, format_type, data
+                    if first_char == '{':
+                        data = json.loads(raw_text)
+                        df, format_type = parse_inventory_json(data)
+                        return df, format_type, data
+                    elif first_char == '[':
+                        parser = ijson.items(response.raw, 'item')
+                        data = [item for item in parser]
+                        df, format_type = parse_inventory_json(data)
+                        return df, format_type, data
+                    else:
+                        raise ValueError("Unknown JSON structure")
                 except Exception:
                     try:
                         df = pd.read_csv(response.raw)
@@ -1263,6 +1320,7 @@ def load_from_url(url):
                         raise ValueError(f"Unsupported data format or failed to parse: {e}")
     except Exception as e:
         logger.error(f"Failed to load data from URL: {str(e)}\n{traceback.format_exc()}")
+        print(f"Failed to load data from URL: {str(e)}\n{traceback.format_exc()}")
         raise ValueError(f"Failed to load data from URL: {e}")
     
 
@@ -1346,7 +1404,9 @@ def data_view():
             products=products,
             format_type=format_type,
             theme=config['SETTINGS'].get('theme', 'dark'),
-            version=APP_VERSION
+            version=APP_VERSION,
+            vendor=transfer_info['vendor'],
+            order_date=transfer_info['accepted_date']
         )
     except Exception as e:
         logger.error(f'Error in data_view: {str(e)}', exc_info=True)
@@ -1562,9 +1622,9 @@ def settings():
                 config['API'] = {}
             config['API']['bamboo_key'] = request.form['api_key']
         
-        if 'output_dir' in request.form:
-            output_dir = request.form['output_dir']
-            if output_dir and os.path.exists(output_dir):
+        if 'outputDir' in request.form:
+            output_dir = request.form['outputDir']
+            if output_dir:
                 config['PATHS']['output_dir'] = output_dir
         
         # Save updated config

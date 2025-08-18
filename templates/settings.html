@@ -5,6 +5,41 @@
 {% block content %}
 <div class="row">
     <div class="col-lg-8 mx-auto">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4><i class="fas fa-sliders-h"></i> Quick Settings</h4>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('settings') }}" method="post">
+                    <div class="mb-3">
+                        <label for="itemsPerPage" class="form-label">Items per Page</label>
+                        <input type="number" class="form-control" id="itemsPerPage" name="items_per_page" value="{{ config['SETTINGS'].get('items_per_page', '4') }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="outputDir" class="form-label">Output Directory</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="outputDir" name="outputDir" value="{{ output_dir }}" placeholder="/user/downloads">
+                            <button type="button" class="btn btn-info" onclick="document.getElementById('outputDirPicker').click();">
+                                <i class="fas fa-folder-open"></i> Choose
+                            </button>
+                        </div>
+                        <input type="file" id="outputDirPicker" style="display:none" webkitdirectory directory onchange="updateOutputDir(this)">
+                        <script>
+                        function updateOutputDir(input) {
+                            if (input.files.length > 0) {
+                                // Get the path of the selected folder
+                                var path = input.files[0].webkitRelativePath.split('/')[0];
+                                document.getElementById('outputDir').value = path;
+                            }
+                        }
+                        </script>
+                    </div>
+                    <div class="mb-3">
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </div>
+                </form>
+            </div>
+        </div>
         <div class="card">
             <div class="card-header">
                 <h4><i class="fas fa-cogs"></i> Settings</h4>
@@ -39,14 +74,22 @@
                             </div>
                             
                             <div class="form-group mb-3">
-                                <label for="output_dir" class="form-label">Output Directory</label>
+                                <label for="outputDir" class="form-label">Output Directory</label>
                                 <div class="input-group">
-                                    <input type="text" class="form-control" id="output_dir" name="output_dir" 
-                                           value="{{ config['PATHS']['output_dir'] }}" readonly>
-                                    <button type="button" class="btn btn-info" onclick="browseDirectory()">
-                                        <i class="fas fa-folder-open"></i> Browse
+                                    <input type="text" class="form-control" id="outputDir" name="outputDir" value="{{ output_dir }}" placeholder="/user/downloads">
+                                    <button type="button" class="btn btn-info" onclick="document.getElementById('outputDirPicker').click();">
+                                        <i class="fas fa-folder-open"></i> Choose
                                     </button>
                                 </div>
+                                <input type="file" id="outputDirPicker" style="display:none" webkitdirectory directory onchange="updateOutputDir(this)">
+                                <script>
+                                function updateOutputDir(input) {
+                                    if (input.files.length > 0) {
+                                        var path = input.files[0].webkitRelativePath.split('/')[0];
+                                        document.getElementById('outputDir').value = path;
+                                    }
+                                }
+                                </script>
                                 <small class="form-text text-muted">
                                     Default: Downloads folder
                                 </small>
