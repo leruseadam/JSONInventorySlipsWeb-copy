@@ -86,14 +86,28 @@ class SimpleDocumentGenerator:
         template_paths = []
         if self.template_path:
             template_paths.append(self.template_path)
+            logger.info(f"Adding provided template path: {self.template_path}")
         
         # Add standard locations
         webapp_root = get_webapp_root()
-        template_paths.extend([
+        logger.info(f"Webapp root path: {webapp_root}")
+        
+        standard_paths = [
             os.path.join(webapp_root, 'templates', 'documents', 'InventorySlips.docx'),
             os.path.join(webapp_root, 'templates', 'InventorySlips.docx'),
-            os.path.join(webapp_root, 'InventorySlips.docx')
-        ])
+            os.path.join(webapp_root, 'InventorySlips.docx'),
+            # Add absolute paths for PythonAnywhere
+            '/home/adamcordova/JSONInventorySlipsWeb-copy/templates/documents/InventorySlips.docx',
+            '/home/adamcordova/JSONInventorySlipsWeb-copy/templates/InventorySlips.docx'
+        ]
+        
+        template_paths.extend(standard_paths)
+        for path in standard_paths:
+            logger.info(f"Adding standard path: {path}")
+            if os.path.exists(path):
+                logger.info(f"Path exists: {path}")
+            else:
+                logger.warning(f"Path does not exist: {path}")
 
         errors = []
         for template_path in template_paths:
@@ -169,11 +183,22 @@ class SimpleDocumentGenerator:
                     with docx.open('word/document.xml') as xml_content:
                         xml_str = xml_content.read().decode('utf-8')
                         # Look for Label1 placeholders in raw XML
-                        if "{{Label1" in xml_str:
-                            logger.info(f"Found valid placeholders in {template_path}")
-                            self.doc = Document(template_path)
+                    if "{{Label1" in xml_str or "{Label1" in xml_str or "Label1" in xml_str:
+                        logger.info(f"Found valid placeholders in {template_path}")
+                        logger.info("Loading document from valid template...")
+                        self.doc = Document(template_path)
+                        
+                        # Verify document structure
+                        if len(self.doc.tables) > 0:
+                            logger.info(f"Successfully loaded template with {len(self.doc.tables)} tables")
+                            logger.info("Template structure:")
+                            for i, table in enumerate(self.doc.tables):
+                                logger.info(f"- Table {i}: {len(table.rows)} rows x {len(table.columns)} columns")
                             return
-                        template_errors.append(f"{template_path}: Could not find Label1 placeholders in template")
+                        else:
+                            logger.error("Loaded template has no tables")
+                            
+                    template_errors.append(f"{template_path}: Could not find Label1 placeholders in template")
             except Exception as e:
                 logger.error(f"Error reading template {template_path}: {str(e)}")
                 template_errors.append(f"{template_path}: {str(e)}")
@@ -460,14 +485,24 @@ class SimpleDocumentGenerator:
             logger.info("Starting document generation...")
             logger.info(f"Number of records to process: {len(records)}")
             
+            # Debug environment
+            logger.info(f"Current working directory: {os.getcwd()}")
+            logger.info(f"Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
+            logger.info(f"Environment: {os.environ.get('PYTHONANYWHERE_DOMAIN', 'Local')}")
+            
             # If template is not loaded, try to load it
             if not self.doc:
                 if not self.template_path:
-                    raise ValueError("No template path provided and no template loaded")
+                    logger.warning("No template path provided, attempting to find template...")
                 self._load_template()
                 
             if not self.doc:
                 raise ValueError("Failed to load document template")
+                
+            # Verify template was loaded correctly
+            logger.info(f"Template loaded with {len(self.doc.tables)} tables")
+            for i, table in enumerate(self.doc.tables):
+                logger.info(f"Table {i}: {len(table.rows)} rows x {len(table.columns)} columns")
             
             # Process records in batches of 4 (labels per page)
             page_number = 1
