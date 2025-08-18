@@ -472,6 +472,7 @@ class SimpleDocumentGenerator:
             # Process records in batches of 4 (labels per page)
             page_number = 1
             records_processed = 0
+            format_samples = []
             
             for i in range(0, len(records), 4):
                 logger.info(f"Processing page {page_number}")
@@ -536,16 +537,14 @@ class SimpleDocumentGenerator:
         except Exception as e:
             logger.error(f"Error generating document: {str(e)}")
             return False, str(e)
-            return True, None
             
-        except Exception as e:
-            logger.error(f"Error generating document: {str(e)}")
-            return False, str(e)
+    def check_placeholders(self, replacements=None, base_fields=None, idx=None, page_num=None, page_records=None, total_pages=None):
+        """Helper method to check placeholders in document"""
+        try:
+            if not replacements:
+                return False, "No replacements dictionary provided"
 
-        # Do the replacements in all paragraphs and tables
-        changed = False
-                    
-                    # First, scan the document to find what placeholder format is actually used
+            changed = False
             found_format = None
             format_samples = []
             
@@ -566,92 +565,94 @@ class SimpleDocumentGenerator:
                 for row in table.rows:
                     for cell in row.cells:
                         check_text_for_placeholders(cell.text)
-                    
-                    if format_samples:
-                        logger.info(f"Found placeholder format examples: {format_samples[:3]}")
-                        # Generate new replacements using the detected format pattern
-                        detected_format = format_samples[0]
-                        format_type = 'unknown'
-                        if '{{' in detected_format and '}}' in detected_format:
-                            format_type = 'double_braces'
-                        elif '{' in detected_format and '}' in detected_format:
-                            format_type = 'single_braces'
-                        elif '.' in detected_format:
-                            format_type = 'no_braces_dot'
-                        elif ' ' in detected_format:
-                            format_type = 'no_braces_space'
+            
+            if format_samples:
+                logger.info(f"Found placeholder format examples: {format_samples[:3]}")
+                # Generate new replacements using the detected format pattern
+                detected_format = format_samples[0]
+                format_type = 'unknown'
+                if '{{' in detected_format and '}}' in detected_format:
+                    format_type = 'double_braces'
+                elif '{' in detected_format and '}' in detected_format:
+                    format_type = 'single_braces'
+                elif '.' in detected_format:
+                    format_type = 'no_braces_dot'
+                elif ' ' in detected_format:
+                    format_type = 'no_braces_space'
+                else:
+                    format_type = 'no_braces_concat'
+                
+                logger.info(f"Detected format type: {format_type}")
+                
+                # Use the detected format for replacements if base_fields and idx are provided
+                if base_fields and idx is not None:
+                    updated_replacements = {}
+                    for field, value in base_fields.items():
+                        key = None
+                        if format_type == 'double_braces':
+                            key = f'{{{{Label{idx}.{field}}}}}'
+                        elif format_type == 'single_braces':
+                            key = f'{{Label{idx}.{field}}}'
+                        elif format_type == 'no_braces_dot':
+                            key = f'Label{idx}.{field}'
+                        elif format_type == 'no_braces_space':
+                            key = f'Label{idx} {field}'
                         else:
-                            format_type = 'no_braces_concat'
-                            
-                        logger.info(f"Detected format type: {format_type}")
-                        
-                        # Use the detected format for replacements
-                        updated_replacements = {}
-                        for field, value in base_fields.items():
-                            if format_type == 'double_braces':
-                                key = f'{{{{Label{idx}.{field}}}}}'
-                            elif format_type == 'single_braces':
-                                key = f'{{Label{idx}.{field}}}'
-                            elif format_type == 'no_braces_dot':
-                                key = f'Label{idx}.{field}'
-                            elif format_type == 'no_braces_space':
-                                key = f'Label{idx} {field}'
-                            else:
-                                key = f'Label{idx}{field}'
-                            updated_replacements[key] = value
-                            
-                        replacements = updated_replacements
+                            key = f'Label{idx}{field}'
+                        updated_replacements[key] = value
                     
-                    # Replace in paragraphs using detected format
+                    replacements = updated_replacements
+                
+                # Replace in paragraphs using detected format
+                for paragraph in self.doc.paragraphs:
+                    for old_text, new_text in replacements.items():
+                        if old_text in paragraph.text:
+                            logger.debug(f"Replacing {old_text} with {new_text}")
+                            self._replace_placeholder_text(paragraph, old_text, new_text)
+                            changed = True
+                
+                # Replace in tables using detected format
+                for table in self.doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for old_text, new_text in replacements.items():
+                                if old_text in cell.text:
+                                    logger.debug(f"Replacing {old_text} with {new_text} in table cell")
+                                    self._replace_text_in_cell(cell, old_text, new_text)
+                                    changed = True
+                                    logger.debug(f"Updated cell content: {cell.text[:50]}")
+
+            # Clear unused placeholders on the last page
+            if total_pages is not None and page_num is not None and page_num == total_pages - 1:
+                for unused_idx in range(len(page_records) + 1, 5):
+                    empty_replacements = {
+                        f'{{{{Label{unused_idx}.AcceptedDate}}}}': '',
+                        f'{{{{Label{unused_idx}.Vendor}}}}': '',
+                        f'{{{{Label{unused_idx}.ProductName}}}}': '',
+                        f'{{{{Label{unused_idx}.Barcode}}}}': '',
+                        f'{{{{Label{unused_idx}.QuantityReceived}}}}': '',
+                    }
+                    # Clear in all document elements
                     for paragraph in self.doc.paragraphs:
-                        for old_text, new_text in replacements.items():
+                        for old_text in empty_replacements:
                             if old_text in paragraph.text:
-                                logger.debug(f"Replacing {old_text} with {new_text}")
-                                self._replace_placeholder_text(paragraph, old_text, new_text)
-                                changed = True
-                    
-                    # Replace in tables using detected format
+                                self._replace_placeholder_text(paragraph, old_text, '')
                     for table in self.doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
-                                for old_text, new_text in replacements.items():
+                                for old_text in empty_replacements:
                                     if old_text in cell.text:
-                                        logger.debug(f"Replacing {old_text} with {new_text} in table cell")
-                                        self._replace_text_in_cell(cell, old_text, new_text)
-                                        changed = True
-                                        logger.debug(f"Updated cell content: {cell.text[:50]}")
+                                        self._replace_text_in_cell(cell, old_text, '')
 
-                    if not changed:
-                        logger.warning(f"No replacements made for record {idx} on page {page_num + 1}")
+            if not changed:
+                logger.warning("No placeholders were replaced")
+            else:
+                logger.info("Successfully replaced placeholders in document")
 
-                # Clear unused placeholders on the last page
-                if page_num == total_pages - 1:
-                    for idx in range(len(page_records) + 1, 5):
-                        empty_replacements = {
-                            f'{{{{Label{idx}.AcceptedDate}}}}': '',
-                            f'{{{{Label{idx}.Vendor}}}}': '',
-                            f'{{{{Label{idx}.ProductName}}}}': '',
-                            f'{{{{Label{idx}.Barcode}}}}': '',
-                            f'{{{{Label{idx}.QuantityReceived}}}}': '',
-                        }
-                        # Clear in all document elements
-                        for paragraph in self.doc.paragraphs:
-                            for old_text in empty_replacements:
-                                if old_text in paragraph.text:
-                                    self._replace_placeholder_text(paragraph, old_text, '')
-                        for table in self.doc.tables:
-                            for row in table.rows:
-                                for cell in row.cells:
-                                    for old_text in empty_replacements:
-                                        if old_text in cell.text:
-                                            self._replace_text_in_cell(cell, old_text, '')
-            
-            # Calculate total pages
-            total_pages = (len(records) + 3) // 4  # Ceiling division by 4
-            logger.info(f"Generated {total_pages} pages")
             return True, None
+            
         except Exception as e:
-            logger.error(f"Error generating document: {str(e)}")
+            logger.error(f"Error checking placeholders: {str(e)}")
             return False, str(e)
             
     def save(self, filepath):
