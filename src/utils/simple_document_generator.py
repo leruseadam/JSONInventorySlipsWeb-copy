@@ -472,7 +472,6 @@ class SimpleDocumentGenerator:
             # Process records in batches of 4 (labels per page)
             page_number = 1
             records_processed = 0
-            format_samples = []
             
             # Get existing tables from template
             if not self.doc.tables:
@@ -484,6 +483,9 @@ class SimpleDocumentGenerator:
             # Calculate how many pages we need
             total_pages = (len(records) + 3) // 4
             current_tables = self.doc.tables[:]  # Make a copy of the original tables
+            
+            # Define the placeholder fields we need to replace
+            placeholder_fields = ['ProductName', 'Barcode', 'QuantityReceived', 'AcceptedDate', 'Vendor']
             
             for i in range(0, len(records), 4):
                 logger.info(f"Processing page {page_number}")
@@ -497,19 +499,18 @@ class SimpleDocumentGenerator:
                 
                 # Process records for this page
                 page_records = records[i:i + 4]
-                table_idx = (page_number - 1) * tables_per_page
                 
-                for row_idx, record in enumerate(page_records):
+                # For each record in this batch
+                for idx, record in enumerate(page_records, start=1):
                     try:
-                        # Get current table
-                        table = self.doc.tables[table_idx]
-                        
-                        # Prepare cell data
+                        # Prepare data
                         vendor = record.get('Vendor', 'Unknown')
                         if ' - ' in vendor:
                             vendor = vendor.split(' - ')[1]
                         
-                        cell_data = {
+                        # Create replacement dictionary for this record
+                        replacements = {}
+                        base_data = {
                             'ProductName': str(record.get('ProductName', '')),
                             'Barcode': str(record.get('Barcode', '')),
                             'QuantityReceived': str(record.get('QuantityReceived', '')),
@@ -517,9 +518,38 @@ class SimpleDocumentGenerator:
                             'Vendor': vendor
                         }
                         
-                        # Get cell and add content
-                        if row_idx < len(table.rows):
-                            cell = table.rows[row_idx].cells[0]
+                        # Generate all possible placeholder formats for each field
+                        for field in placeholder_fields:
+                            value = base_data[field]
+                            # Double braces format ({{Label1.Field}})
+                            replacements[f'{{{{Label{idx}.{field}}}}}'] = value
+                            # Single brace format ({Label1.Field})
+                            replacements[f'{{Label{idx}.{field}}}'] = value
+                            # No braces format (Label1.Field)
+                            replacements[f'Label{idx}.{field}'] = value
+                        
+                        logger.info(f"Processing replacements for Label{idx}")
+                        
+                        # Replace in all paragraphs
+                        for paragraph in self.doc.paragraphs:
+                            for old_text, new_text in replacements.items():
+                                if old_text in paragraph.text:
+                                    self._replace_placeholder_text(paragraph, old_text, new_text)
+                        
+                        # Replace in all tables
+                        for table in self.doc.tables:
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    for old_text, new_text in replacements.items():
+                                        if old_text in cell.text:
+                                            self._replace_text_in_cell(cell, old_text, new_text)
+                        
+                        records_processed += 1
+                        logger.info(f"Processed record {records_processed}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing record {idx} on page {page_number}: {str(e)}")
+                        raise
                         if self._add_label(cell, cell_data):
                             records_processed += 1
                             logger.info(f"Added label {records_processed} (Page {page_number}, Row {row_idx + 1})")
@@ -533,7 +563,7 @@ class SimpleDocumentGenerator:
                             raise ValueError(f"Empty cell content for record {records_processed}")
                             
                     except Exception as e:
-                        logger.error(f"Error processing record on page {page_number}, row {row_idx + 1}: {str(e)}")
+                        logger.error(f"Error processing record {records_processed + 1} on page {page_number}: {str(e)}")
                         raise
                 
                 page_number += 1
