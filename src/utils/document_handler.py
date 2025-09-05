@@ -2,6 +2,8 @@ import logging
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 import os
 import re
 
@@ -19,9 +21,30 @@ class DocumentHandler:
         return self.doc
 
     def add_content_to_table(self, records):
-        """Add content to document replacing placeholders (optimized)"""
+        """Add content to document replacing placeholders (optimized)
+        NOTE: To enforce exact table/cell dimensions, set all table and cell sizes to fixed values in the DOCX template itself.
+        Optionally, you can enforce cell margins in code (see below)."""
         if not records or not isinstance(records, list):
             return False
+    # Optionally, enforce cell margins for all tables/cells after loading template
+    def enforce_cell_margins(self, margin_dxa=100):
+        """
+        Set all cell margins in all tables to a fixed value (in twips).
+        Call this after loading your template and before saving.
+        """
+        if not self.doc:
+            return
+        for table in self.doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    tc = cell._tc
+                    tcPr = tc.get_or_add_tcPr()
+                    for margin in ['top', 'bottom', 'left', 'right']:
+                        margin_tag = f'w:{margin}'
+                        margin_elem = OxmlElement(margin_tag)
+                        margin_elem.set(qn('w:w'), str(margin_dxa))
+                        margin_elem.set(qn('w:type'), 'dxa')
+                        tcPr.append(margin_elem)
 
         try:
             # Process records in chunks of 4 (for template layout)

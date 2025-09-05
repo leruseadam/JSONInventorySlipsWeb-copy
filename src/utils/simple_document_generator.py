@@ -29,15 +29,32 @@ class SimpleDocumentGenerator:
             section.right_margin = Inches(0.75)
             
     def _create_table(self, rows=2, cols=2):
-        """Create a table with specified dimensions"""
+        """Create a table with specified dimensions and enforce exact cell/table sizes"""
         table = self.doc.add_table(rows=rows, cols=cols)
         table.style = 'Table Grid'
         table.autofit = False
-        # Set column widths
-        for cell in table.columns[0].cells:
-            cell.width = Inches(3.5)
-        for cell in table.columns[1].cells:
-            cell.width = Inches(3.5)
+        col_widths = [Inches(3.5), Inches(3.5)]
+        row_height = Inches(2.0)
+        for col_idx, width in enumerate(col_widths):
+            for cell in table.columns[col_idx].cells:
+                cell.width = width
+        for row in table.rows:
+            tr = row._tr
+            trPr = tr.get_or_add_trPr()
+            trHeight = OxmlElement('w:trHeight')
+            trHeight.set(qn('w:val'), str(int(row_height.pt * 20)))  # twips
+            trHeight.set(qn('w:hRule'), 'exact')
+            trPr.append(trHeight)
+            for cell in row.cells:
+                tc = cell._tc
+                tcPr = tc.get_or_add_tcPr()
+                # Set cell margins
+                for margin, val in [('top', 100), ('bottom', 100), ('left', 100), ('right', 100)]:
+                    margin_tag = f'w:{margin}'
+                    margin_elem = OxmlElement(margin_tag)
+                    margin_elem.set(qn('w:w'), str(val))
+                    margin_elem.set(qn('w:type'), 'dxa')
+                    tcPr.append(margin_elem)
         return table
         
     def _add_page_number(self, current_page, total_pages):
