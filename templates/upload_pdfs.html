@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload PDF Scans - Inventory Slip Generator</title>
+    <!-- Add your CSS and JS links here -->
+</head>
+<body>
+    {% extends "base.html" %}
+
+    {% block title %}Upload PDF Scans - Inventory Slip Generator{% endblock %}
+
+    {% block content %}
+    <div class="container mt-4">
+      <div class="row justify-content-center">
+        <div class="col-md-8">
+          <div class="card mb-4">
+            <div class="card-header">
+              <h5><i class="fas fa-file-pdf"></i> Upload PDF Scans</h5>
+            </div>
+            <div class="card-body">
+              <form method="post" enctype="multipart/form-data">
+                <div class="mb-3">
+                  <label for="pdfs" class="form-label">Select PDF files</label>
+                  <input type="file" class="form-control" id="pdfs" name="pdfs" multiple accept="application/pdf">
+                  <div class="form-text">You can select multiple PDF files to upload at once.</div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                  <i class="fas fa-upload"></i> Upload PDFs
+                </button>
+              </form>
+              {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                  <div class="alert alert-info mt-3">
+                    {% for message in messages %}
+                      <div>{{ message }}</div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              {% endwith %}
+              <a href="{{ url_for('list_pdfs') }}" class="btn btn-outline-secondary mt-3">
+                <i class="fas fa-list"></i> View Uploaded PDFs
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endblock %}
+</body>
+</html>

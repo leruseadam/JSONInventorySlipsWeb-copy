@@ -122,39 +122,36 @@
                 </tr>
               </thead>
               <tbody id="productsTableBody">
-                {% for group in range((products|length + 3) // 4) %}
-                  <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group }}">
-                    <td colspan="6" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
-                      <div class="d-flex justify-content-between align-items-center">
-                        <span style="font-weight: 600;">Group {{ group + 1 }}</span>
-                        <div class="form-check">
-                          <input type="checkbox" class="form-check-input group-select-all" data-group="{{ group }}" id="group{{ group }}SelectAll" aria-label="Select all in group {{ group + 1 }}">
-                          <label class="form-check-label" for="group{{ group }}SelectAll">Select All</label>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                  {% for i in range(4) %}
-                    {% set idx = group * 4 + i %}
-                    {% if idx < products|length %}
-                      {% set product = products[idx] %}
-                      <tr class="group-product-row" data-index="{{ idx }}" data-group="{{ group }}" draggable="true">
-                        <td>
-                          <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name }}">
-                        </td>
-                        <td>{{ product.name | replace('Medically Compliant - ', '') }}</td>
-                        <td>{{ product.strain }}</td>
-                        <td>{{ product.sku }}</td>
-                        <td>{{ product.quantity }}</td>
-                        <td>
-                          <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
-                            {{ product.source }}
-                          </span>
-                        </td>
-                      </tr>
-                    {% endif %}
-                  {% endfor %}
-                {% endfor %}
+                                                {% for group in groups %}
+                                                    {% set group_idx = loop.index0 %}
+                                                    <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group_idx }}">
+                                                        <td colspan="6" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
+                                                            <div class="d-flex justify-content-between align-items-center">
+                                                                <span style="font-weight: 600;">Group {{ loop.index }} - {{ group.group_label }}</span>
+                                                                <div class="form-check">
+                                                                    <input type="checkbox" class="form-check-input group-select-all" data-group="{{ group_idx }}" id="group{{ group_idx }}SelectAll" aria-label="Select all in group {{ loop.index }}">
+                                                                    <label class="form-check-label" for="group{{ group_idx }}SelectAll">Select All</label>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                    {% for product in group.products %}
+                                                                            <tr class="group-product-row" data-index="{{ product.id }}" data-group="{{ group_idx }}" draggable="true">
+                                                                                <td>
+                                                                                    <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name|safe }}">
+                                                                                </td>
+                                                                                <td>{{ product.name | replace('Medically Compliant - ', '') | safe }}</td>
+                                                                                <td>{{ product.strain | safe }}</td>
+                                                                                <td>{{ product.sku | safe }}</td>
+                                                                                <td>{{ product.quantity | safe }}</td>
+                                                                                <td>
+                                                                                    <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
+                                                                                        {{ product.source | safe }}
+                                                                                    </span>
+                                                                                </td>
+                                                                            </tr>
+                                                    {% endfor %}
+                                                {% endfor %}
               </tbody>
             </table>
           </div>

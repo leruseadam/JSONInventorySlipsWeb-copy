@@ -8,7 +8,11 @@ import os
 import sys
 import argparse
 import tempfile
+import pytesseract
 from app import app
+
+# Ensure pytesseract uses the correct tesseract binary on macOS
+pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Run the Inventory Slip Generator Flask application')

@@ -6,13 +6,15 @@ import json
 import datetime
 import urllib.request
 import pandas as pd
+from io import BytesIO
+from docxtpl import DocxTemplate
+from docx import Document
+from docx.shared import Pt
+from docxcompose.composer import Composer
 import threading
 import configparser
 import webbrowser
 import re
-
-# Import our custom document handler
-from ..utils.docgen import DocxGenerator
 
 from ..base.base_ui import BaseUI
 from ..config.settings import load_config, save_config, resource_path, APP_VERSION

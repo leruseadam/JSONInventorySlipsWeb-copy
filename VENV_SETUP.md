@@ -4,9 +4,7 @@
 
 ### Activate Virtual Environment
 ```bash
-workon myapp  # If using virtualenvwrapper
-# OR
-source ~/.virtualenvs/myapp/bin/activate  # Direct path activation
+source venv/bin/activate
 ```
 
 ### Deactivate Virtual Environment
@@ -17,12 +15,6 @@ deactivate
 ### Install Dependencies
 ```bash
 pip install -r requirements.txt
-```
-
-### Virtual Environment Location
-The virtual environment is located at:
-```bash
-/home/adamcordova/.virtualenvs/myapp
 ```
 
 ### Run the App
@@ -78,15 +70,14 @@ If you get import errors:
 
 ## Dependencies Installed
 
-- Flask 3.0.0
-- requests 2.31.0
-- pandas 2.1.0
-- python-docx 1.0.0
-- docxtpl 0.16.7
+- Flask 3.1.1
+- requests 2.32.4
+- pandas 2.3.1
+- python-docx 1.2.0
+- docxtpl 0.20.1
 - docxcompose 1.4.0
-- Werkzeug 3.0.0
-- configparser 6.0.0
-- Python 3.11
+- Werkzeug 3.1.3
+- configparser 7.2.0
 
 ## Running the App
 
@@ -102,35 +93,4 @@ The app now includes fixes for Chrome authentication issues:
 - Session cookies set to 'Lax' SameSite policy
 - CORS headers for localhost
 - Chrome-specific browser flags
-- Session debugging tools
-
-## PythonAnywhere Configuration
-
-### Static Files
-Configure the following static file mappings in PythonAnywhere:
-
-```
-URL: /static/
-Directory: /home/leruseadam/JSONInventorySlipsWeb-copy/static
-
-URL: /css/
-Directory: /home/leruseadam/JSONInventorySlipsWeb-copy/static/css
-
-URL: /js/
-Directory: /home/leruseadam/JSONInventorySlipsWeb-copy/static/js
-
-URL: /images/
-Directory: /home/leruseadam/JSONInventorySlipsWeb-copy/static/images
-```
-
-### WSGI Configuration
-Make sure your WSGI file points to:
-```
-/home/leruseadam/JSONInventorySlipsWeb-copy/wsgi.py
-```
-
-### Virtual Environment
-Path to virtualenv:
-```
-/home/leruseadam/.virtualenvs/myapp
-``` 
+- Session debugging tools 

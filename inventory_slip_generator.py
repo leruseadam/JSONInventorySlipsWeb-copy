@@ -12,6 +12,8 @@ import threading
 import configparser
 import webbrowser
 import re
+import shutil
+import sqlite3
 
 # Import our custom document generator
 from src.utils.docgen import DocxGenerator
@@ -161,84 +163,67 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         # Get settings from config
         items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
         output_dir = config['PATHS'].get('output_dir', DEFAULT_SAVE_DIR)
-        
         # Ensure output directory exists
         if not os.path.exists(output_dir):
             try:
                 os.makedirs(output_dir)
             except Exception as e:
                 return False, f"Failed to create output directory: {e}"
-        
         if status_callback:
             status_callback("Processing data...")
-        
         # Convert DataFrame to records
         records = selected_df.to_dict(orient="records")
-        
         # Get first vendor name for the filename
         vendor_name = records[0].get('Vendor', 'Unknown')
         if ' - ' in vendor_name:
             vendor_name = vendor_name.split(' - ')[1]
         vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
-        
         # Create filename
         now = datetime.datetime.now().strftime("%Y%m%d")
         outname = f"{now}_{vendor_name}_OrderSheet.docx"
         outpath = os.path.join(output_dir, outname)
-        
         # Create generator
         generator = DocxGenerator()
-        
         # Generate document with records
-        if status_callback:
-            status_callback("Generating document...")
-            
-        if progress_callback:
-            progress_callback(33)  # Generation started
-            
-        generator.generate_inventory_slip(
-            records=records,
-            vendor_name=vendor_name,
-            date=now,
-            rows_per_page=items_per_page
-        )
-        
-        if progress_callback:
-            progress_callback(66)  # Document generated
-            
-        if status_callback:
-            status_callback("Saving document...")
-            
-        # Save document
-        if not generator.save(outpath):
-            return False, "Failed to save document"
-            
-        if not os.path.exists(outpath):
-            return False, "Failed to save document"
-            
-        if status_callback:
-            status_callback("Adjusting formatting...")
-            
-        # Adjust formatting
-        adjust_table_font_sizes(outpath)
-        
-        if progress_callback:
-            progress_callback(100)  # Complete
-            
-        if status_callback:
-            status_callback(f"Saved to: {outpath}")
-        
-        # Open file if configured
-        auto_open = config['SETTINGS'].getboolean('auto_open', True)
-        if auto_open:
-            open_file(outpath)
-        
-        return True, outpath
-    
+        # ...existing code...
     except Exception as e:
         if status_callback:
             status_callback(f"Error: {e}")
         return False, str(e)
+    def init_pdf_db(self):
+        conn = sqlite3.connect(self.pdf_db_path)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS pdf_inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            upload_date TEXT NOT NULL
+        )''')
+        conn.commit()
+        conn.close()
+
+    def save_pdf_metadata(self, filename):
+        conn = sqlite3.connect(self.pdf_db_path)
+        c = conn.cursor()
+        c.execute('INSERT INTO pdf_inventory (filename, upload_date) VALUES (?, ?)',
+                  (filename, datetime.datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+    def upload_pdf_folder(self):
+        folder_selected = filedialog.askdirectory(title="Select Folder of PDF Scans")
+        if not folder_selected:
+            return
+        os.makedirs(self.uploads_dir, exist_ok=True)
+        self.init_pdf_db()
+        count = 0
+        for fname in os.listdir(folder_selected):
+            if fname.lower().endswith('.pdf'):
+                src_path = os.path.join(folder_selected, fname)
+                dest_path = os.path.join(self.uploads_dir, fname)
+                shutil.copy2(src_path, dest_path)
+                self.save_pdf_metadata(fname)
+                count += 1
+    messagebox.showinfo("PDF Upload", f"Uploaded {count} PDF(s) to database.")
 
 # Theme colors
 class ThemeColors:
@@ -2041,11 +2026,13 @@ class InventorySlipGenerator:
         
         def fetch_data():
             try:
-                with urllib.request.urlopen(url) as resp:
-                    data = json.loads(resp.read().decode())
-                
+                import requests
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
                 self.root.after(0, lambda: self.process_json_data(data, dialog))
-                
+
                 # Add to recent URLs if not already there
                 if url not in self.recent_urls:
                     self.recent_urls.insert(0, url)
@@ -2053,7 +2040,6 @@ class InventorySlipGenerator:
                     self.config['PATHS']['recent_urls'] = '|'.join(self.recent_urls)
                     save_config(self.config)
                     self.update_recent_menu()
-            
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch JSON:\n{e}"))
                 self.root.after(0, lambda: self.status_var.set("Failed to load data."))

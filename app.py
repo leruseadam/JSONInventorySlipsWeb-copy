@@ -3,7 +3,37 @@ Flask Inventory Slip Generator - Web application for generating inventory slips
 from CSV and JSON data with support for Bamboo and Cultivera formats.
 """
 
+
+"""
+Flask Inventory Slip Generator - Web application for generating inventory slips
+from CSV and JSON data with support for Bamboo and Cultivera formats.
+"""
+
+
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, send_file, send_from_directory
 # Standard library imports
+import os
+import sys
+import json
+import socket
+import ssl
+import base64
+import hmac
+import hashlib
+import logging
+import threading
+import tempfile
+import urllib.request
+import urllib.error
+import uuid
+import re
+import webbrowser
+import time
+from functools import wraps
+from io import BytesIO
+import zlib
+from pathlib import Path
+from datetime import datetime
 import os
 import sys
 import json
@@ -50,10 +80,57 @@ from docx.shared import Pt, Inches
 from docxcompose.composer import Composer
 import configparser
 from werkzeug.utils import secure_filename
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
+import sqlite3
 
 # Local imports
 from src.utils.document_handler import DocumentHandler
 from src.ui.app import InventorySlipGenerator
+
+# Configure logging (must be before any logger usage)
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Tesseract diagnostics (must be after logger setup)
+import subprocess
+pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
+try:
+    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
+    logger.info(f"Tesseract version: {version.strip()}")
+except Exception as e:
+    logger.error(f"Could not get Tesseract version: {e}")
+import requests
+import pandas as pd
+from docxtpl import DocxTemplate
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_ORIENT
+from docx.shared import Pt, Inches
+from docxcompose.composer import Composer
+import configparser
+from werkzeug.utils import secure_filename
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
+import sqlite3
+
+# Local imports
+from src.utils.document_handler import DocumentHandler
+from src.ui.app import InventorySlipGenerator
+import subprocess
+
+# Explicitly set Tesseract binary path
+pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
+
+# Log Tesseract version at startup for diagnostics
+try:
+    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
+    logger.info(f"Tesseract version: {version.strip()}")
+except Exception as e:
+    logger.error(f"Could not get Tesseract version: {e}")
 
 
 # Update the compression constants
@@ -99,23 +176,19 @@ def compress_session_data(data):
         return base64.b64encode(compressed).decode('utf-8')
     except Exception as e:
         logger.error(f"Compression error: {str(e)}")
-        raise
-
-def store_chunked_data(key, data):
-    """Store data with improved chunking and size validation"""
-    import uuid
-    from src.utils.session_storage import store_data
-    session_id = session.get('session_id', str(uuid.uuid4()))
-    session['session_id'] = session_id
-    try:
-        data_str = data if isinstance(data, str) else json.dumps(data)
-        if len(data_str) > MAX_TOTAL_SIZE:
-            # Store in temp file
-            store_data(key, data, session_id)
-            session[key + '_filepath'] = f"{key}_{session_id}.tmp"
-            logger.info(f"Stored large data for {key} in temp file.")
-            return True
-        # Otherwise, store in session as before
+        # Flask must be imported as the very first line
+        from flask import (
+            Flask, 
+            render_template, 
+            request, 
+            redirect, 
+            url_for, 
+            flash, 
+            jsonify, 
+            session, 
+            send_file, 
+            send_from_directory
+        )
         compressed = compress_session_data(data)
         clear_chunked_data(key)
         chunks = [compressed[i:i + MAX_CHUNK_SIZE] for i in range(0, len(compressed), MAX_CHUNK_SIZE)]
@@ -167,10 +240,28 @@ def get_chunked_data(key):
         logger.error(f"Error retrieving chunked data: {str(e)}")
         return None
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Explicitly set Tesseract binary path and log diagnostics
+import pytesseract
+import subprocess
+pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
+try:
+    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
+    logger.info(f"Tesseract version: {version.strip()}")
+except Exception as e:
+    logger.error(f"Could not get Tesseract version: {e}")
 
 # Constants
 CONFIG_FILE = os.path.expanduser("~/inventory_generator_config.ini")
@@ -241,16 +332,132 @@ API_CONFIGS = {
     }
 }
 
-# Initialize Flask application
+
+# Flask app initialization (must come before route definitions)
 app = Flask(__name__,
     static_url_path='',
     static_folder='static',
     template_folder='templates'
 )
-# Use a fixed secret key for development to preserve session data
 app.secret_key = 'your-fixed-development-secret-key'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB
+
+# PDF upload DB setup
+PDF_DB_PATH = 'pdf_inventory.db'
+def init_pdf_db():
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS pdf_inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL,
+        upload_date TEXT NOT NULL,
+        ocr_text TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def save_pdf_metadata(filename, ocr_text):
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO pdf_inventory (filename, upload_date, ocr_text) VALUES (?, ?, ?)',
+              (filename, datetime.now().isoformat(), ocr_text))
+    conn.commit()
+    conn.close()
+
+def extract_text_from_pdf(pdf_path):
+    try:
+        images = convert_from_path(pdf_path)
+        text = ""
+        for i, img in enumerate(images):
+            # Preprocess image: convert to grayscale and increase contrast
+            img = img.convert('L')  # Grayscale
+            from PIL import ImageEnhance
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.0)  # Increase contrast
+            logger.info(f"OCR page {i+1}: mode={img.mode}, size={img.size}")
+            ocr_result = pytesseract.image_to_string(img)
+            logger.info(f"OCR output for page {i+1}: {repr(ocr_result)}")
+            text += ocr_result + "\n"
+        return text.strip()
+    except Exception as e:
+        import traceback, os
+        error_details = traceback.format_exc()
+        tesseract_cmd = getattr(pytesseract.pytesseract, 'tesseract_cmd', None)
+        env_path = os.environ.get('PATH', '')
+        logger.error(f"OCR error: {e}\nDetails: {error_details}\nTesseract cmd: {tesseract_cmd}\nPATH: {env_path}")
+        return f"OCR error: {e}\nDetails: {error_details}\nTesseract cmd: {tesseract_cmd}\nPATH: {env_path}"
+
+@app.route('/upload_pdfs', methods=['GET', 'POST'])
+def upload_pdfs():
+    init_pdf_db()
+    if request.method == 'POST':
+        if 'pdfs' not in request.files:
+            flash('No file part')
+            return redirect(request.url)
+        files = request.files.getlist('pdfs')
+        saved_files = []
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        for file in files:
+            if file and file.filename.lower().endswith('.pdf'):
+                temp_filename = file.filename
+                temp_save_path = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
+                file.save(temp_save_path)
+                # OCR processing
+                ocr_text = extract_text_from_pdf(temp_save_path)
+                # Extract Product Name from OCR text
+                import re
+                product_match = re.search(r'Medically Compliant\s*-\s*(.*?)\s*-\s*', ocr_text)
+                product_name = product_match.group(1).strip() if product_match else 'UnknownProduct'
+                # Clean product name for filename
+                safe_product_name = re.sub(r'[^A-Za-z0-9_\-]', '_', product_name)[:40]
+                new_filename = f"{safe_product_name}.pdf"
+                new_save_path = os.path.join(app.config['UPLOAD_FOLDER'], new_filename)
+                os.rename(temp_save_path, new_save_path)
+                save_pdf_metadata(new_filename, ocr_text)
+                saved_files.append(new_filename)
+        flash(f'Uploaded: {", ".join(saved_files)}')
+        return redirect(url_for('upload_pdfs'))
+    return render_template('upload_pdfs.html')
+
+@app.route('/list_pdfs')
+def list_pdfs():
+    init_pdf_db()
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT filename, upload_date, ocr_text FROM pdf_inventory ORDER BY upload_date DESC')
+    pdfs_raw = c.fetchall()
+    conn.close()
+    # Parse OCR text into structured columns
+    def parse_slip(text):
+        import re
+        # Only keep lines with expected fields
+        lines = text.splitlines()
+        filtered = []
+        for line in lines:
+            if re.search(r'(\d{4}-\d{2}-\d{2}|JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate|Medically Compliant|SKU:|Initial Qty Issued:|Qty Received:)', line):
+                filtered.append(line.strip())
+        filtered_text = '\n'.join(filtered)
+        # Extract fields using regex (simple version)
+        date = re.search(r'\d{4}-\d{2}-\d{2}', filtered_text)
+        vendor = re.search(r'JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate', filtered_text)
+        product = re.search(r'(Medically Compliant.*?)(SKU:|$)', filtered_text, re.DOTALL)
+        sku = re.search(r'SKU:\s*(\d+)', filtered_text)
+        qty_issued = re.search(r'Initial Qty Issued:\s*\|?\s*(\d+)?', filtered_text)
+        qty_received = re.search(r'Qty Received:\s*\|?\s*(\d+)?', filtered_text)
+        return {
+            'date': date.group(0) if date else '',
+            'vendor': vendor.group(0) if vendor else '',
+            'product': product.group(1).replace('\n', ' ').strip() if product else '',
+            'sku': sku.group(1) if sku else '',
+            'qty_issued': qty_issued.group(1) if qty_issued else '',
+            'qty_received': qty_received.group(1) if qty_received else ''
+        }
+    pdfs = []
+    for filename, upload_date, ocr_text in pdfs_raw:
+        slip = parse_slip(ocr_text or '')
+        pdfs.append((filename, upload_date, slip['date'], slip['vendor'], slip['product'], slip['sku'], slip['qty_issued'], slip['qty_received']))
+    return render_template('list_pdfs.html', pdfs=pdfs)
 
 # Add security headers and session configuration for Chrome compatibility
 @app.after_request
@@ -1392,16 +1599,34 @@ def data_view():
                 'source': format_type or 'Unknown',
                 'vendor': str(row.get('Vendor', 'Unknown')),
                 'manifest_id': str(row.get('Barcode*', 'N/A')),
-                'accepted_date': str(row.get('Accepted Date', 'N/A'))
+                'accepted_date': str(row.get('Accepted Date', 'N/A')),
+                'type': str(row.get('Product Type*', 'Unknown')),
+                'cost': float(row.get('Cost', 0)) if 'Cost' in row else 0
             }
             products.append(product)
+
+        # Group by weight, sort alphabetically, then split into subgroups of 4
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for product in products:
+            key = str(product.get('weight', 'Unknown'))
+            grouped[key].append(product)
+        sorted_groups = []
+        for group_key in sorted(grouped.keys()):
+            group_products = sorted(grouped[group_key], key=lambda x: x['name'].lower())
+            # Split group_products into chunks of 4
+            for i in range(0, len(group_products), 4):
+                sorted_groups.append({
+                    'group_label': group_key,
+                    'products': group_products[i:i+4]
+                })
 
         # Load configuration
         config = load_config()
 
         return render_template(
             'data_view.html',
-            products=products,
+            groups=sorted_groups,
             format_type=format_type,
             theme=config['SETTINGS'].get('theme', 'dark'),
             version=APP_VERSION,
@@ -1813,7 +2038,7 @@ def api_settings():
     return render_template(
         'api_settings.html',
         api_keys=api_keys,
-        theme=config['SETTINGS'].get('theme', 'dark'),
+                                                         theme=config['SETTINGS'].get('theme', 'dark'),
         version=APP_VERSION
     )
 
@@ -1877,6 +2102,7 @@ def test_chunked_data():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/debug-session')
+
 def debug_session():
     """Debug session issues for Chrome compatibility"""
     try:
@@ -2095,6 +2321,97 @@ def fetch_api():
         flash(f'Error fetching API data: {str(e)}', 'error')
         return redirect(url_for('index'))
 
+def ensure_ocr_column():
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    # Check if ocr_text column exists
+    c.execute("PRAGMA table_info(pdf_inventory)")
+    columns = [row[1] for row in c.fetchall()]
+    if 'ocr_text' not in columns:
+        c.execute('ALTER TABLE pdf_inventory ADD COLUMN ocr_text TEXT')
+        conn.commit()
+    conn.close()
+
+# Call this before any insert/update to pdf_inventory
+ensure_ocr_column()
+
+@app.route('/download_pdf/<filename>')
+def download_pdf(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+
+# Route to delete a PDF scan
+@app.route('/delete_pdf/<filename>', methods=['POST'])
+def delete_pdf(filename):
+    # Remove from DB
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM pdf_inventory WHERE filename = ?', (filename,))
+    conn.commit()
+    conn.close()
+    # Remove file from uploads folder
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    flash(f'Deleted {filename}')
+    return redirect(url_for('list_pdfs'))
+
+@app.route('/download_excel')
+def download_excel():
+    # Fetch PDF metadata and OCR text from DB
+    conn = sqlite3.connect(PDF_DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT filename, upload_date, ocr_text FROM pdf_inventory ORDER BY upload_date DESC')
+    pdfs = c.fetchall()
+    conn.close()
+    # Parse OCR text into structured columns
+    def parse_slip(text):
+        import re
+        lines = text.splitlines()
+        filtered = []
+        for line in lines:
+            if re.search(r'(\d{4}-\d{2}-\d{2}|JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate|Medically Compliant|SKU:|Initial Qty Issued:|Qty Received:)', line):
+                filtered.append(line.strip())
+        filtered_text = '\n'.join(filtered)
+        date = re.search(r'\d{4}-\d{2}-\d{2}', filtered_text)
+        vendor = re.search(r'JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate', filtered_text)
+        product = re.search(r'(Medically Compliant.*?)(SKU:|$)', filtered_text, re.DOTALL)
+        sku = re.search(r'SKU:\s*(\d+)', filtered_text)
+        qty_issued = re.search(r'Initial Qty Issued:\s*\|?\s*(\d+)?', filtered_text)
+        qty_received = re.search(r'Qty Received:\s*\|?\s*(\d+)?', filtered_text)
+        return {
+            'date': date.group(0) if date else '',
+            'vendor': vendor.group(0) if vendor else '',
+            'product': product.group(1).replace('\n', ' ').strip() if product else '',
+            'sku': sku.group(1) if sku else '',
+            'qty_issued': qty_issued.group(1) if qty_issued else '',
+            'qty_received': qty_received.group(1) if qty_received else ''
+        }
+    rows = []
+    for filename, upload_date, ocr_text in pdfs:
+        slip = parse_slip(ocr_text or '')
+        rows.append({
+            'Filename': filename,
+            'Upload Date': upload_date,
+            'Date': slip['date'],
+            'Vendor': slip['vendor'],
+            'Product': slip['product'],
+            'SKU': slip['sku'],
+            'Initial Qty Issued': slip['qty_issued'],
+            'Qty Received': slip['qty_received']
+        })
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    from io import BytesIO
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+    # Use product name from first slip for filename
+    excel_name = 'scanned_pdfs.xlsx'
+    if len(rows) > 0 and rows[0]['Vendor']:
+        safe_vendor_name = re.sub(r'[^A-Za-z0-9_\-]', '_', rows[0]['Vendor'])[:40]
+        excel_name = f"{safe_vendor_name}_inventory.xlsx"
+    return send_file(output, download_name=excel_name, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 if __name__ == '__main__':
     try:
         # Clean up any temporary files from previous runs
@@ -2111,7 +2428,7 @@ if __name__ == '__main__':
                 def open_browser():
                     try:
                         # Try Chrome first with --new-window flag
-                        chrome_path = ""
+                        chrome_path = ''
                         if sys.platform == "darwin":  # macOS
                             chrome_path = 'open -a /Applications/Google\ Chrome.app %s'
                         elif sys.platform == "win32":  # Windows

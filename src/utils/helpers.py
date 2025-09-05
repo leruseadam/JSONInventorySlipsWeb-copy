@@ -1,12 +1,11 @@
 import os
 import sys
 import json
-import datetime
 from docx import Document
 from docx.shared import Pt
+from docxcompose.composer import Composer
 from io import BytesIO
-
-from .docgen import DocxGenerator
+from docxtpl import DocxTemplate
 
 def chunk_records(records, chunk_size=4):
     """Split records into chunks of specified size"""
@@ -86,6 +85,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
     try:
         # Get settings from config
         items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
+        template_path = config['PATHS'].get('template_path')
         output_dir = config['PATHS'].get('output_dir')
         
         # Ensure output directory exists
@@ -98,47 +98,97 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         if status_callback:
             status_callback("Processing data...")
         
-        # Get records
         records = selected_df.to_dict(orient="records")
+        pages = []
+        
+        # Progress calculation
+        total_chunks = (len(records) + items_per_page - 1) // items_per_page
+        current_chunk = 0
+        
+        for chunk in chunk_records(records, items_per_page):
+            current_chunk += 1
+            if progress_callback:
+                progress_value = (current_chunk / total_chunks) * 50  # First half of progress
+                progress_callback(int(progress_value))
+            
+            if status_callback:
+                status_callback(f"Generating page {current_chunk} of {total_chunks}...")
+            
+            try:
+                tpl = DocxTemplate(template_path)
+                context = {}
+                
+                slot_num = 1
+                for rec in chunk:
+                    product_name = rec.get("Product Name*", "")
+                    barcode = rec.get("Barcode*", "")
+                    qty = rec.get("Quantity Received*", rec.get("Quantity*", ""))
+                    
+                    if not product_name and not barcode and not qty:
+                        continue
+                    
+                    try:
+                        qty = int(float(qty))
+                    except (ValueError, TypeError):
+                        qty = ""
+                    
+                    context[f"Label{slot_num}"] = {
+                        "ProductName": product_name,
+                        "Barcode": barcode,
+                        "AcceptedDate": rec.get("Accepted Date", ""),
+                        "QuantityReceived": qty,
+                        "Vendor": rec.get("Vendor", ""),
+                        "StrainName": rec.get("Strain Name", ""),
+                        "ProductType": rec.get("Product Type*", rec.get("Inventory Type", "")),
+                        "THCContent": rec.get("THC Content", ""),
+                        "CBDContent": rec.get("CBD Content", "")
+                    }
+                    slot_num += 1
+                
+                # Fill empty slots
+                for i in range(slot_num, items_per_page + 1):
+                    context[f"Label{i}"] = {
+                        "ProductName": "",
+                        "Barcode": "",
+                        "AcceptedDate": "",
+                        "QuantityReceived": "",
+                        "Vendor": "",
+                        "StrainName": "",
+                        "ProductType": "",
+                        "THCContent": "",
+                        "CBDContent": ""
+                    }
+                
+                tpl.render(context)
+                buf = BytesIO()
+                tpl.save(buf)
+                pages.append(Document(buf))
+                
+            except Exception as e:
+                return False, f"Error generating page {current_chunk}: {e}"
+        
+        if not pages:
+            return False, "No documents generated."
         
         if status_callback:
-            status_callback("Creating document...")
+            status_callback("Combining pages...")
         
-        # Create generator
-        generator = DocxGenerator()
+        master = pages[0]
+        composer = Composer(master)
+        for i, doc in enumerate(pages[1:]):
+            if progress_callback:
+                progress_value = 50 + ((i + 1) / len(pages[1:])) * 25  # Second quarter of progress
+                progress_callback(int(progress_value))
+            composer.append(doc)
         
-        # Get first vendor name for the filename
-        vendor_name = records[0].get('Vendor', 'Unknown')
-        if ' - ' in vendor_name:
-            vendor_name = vendor_name.split(' - ')[1]
-        vendor_name = "".join(c for c in vendor_name if c.isalnum() or c.isspace()).strip()
-        
-        # Create filename
-        now = datetime.datetime.now().strftime("%Y%m%d")
-        outname = f"{now}_{vendor_name}_OrderSheet.docx"
+        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        outname = f"{now}_inventory_slips.docx"
         outpath = os.path.join(output_dir, outname)
-        
-        # Progress calculation - 3 main steps
-        if progress_callback:
-            progress_callback(33)  # Data processing done
-        
-        # Generate document with records
-        generator.generate_inventory_slip(
-            records=records,
-            vendor_name=vendor_name,
-            date=now,
-            rows_per_page=items_per_page
-        )
-        
-        if progress_callback:
-            progress_callback(66)  # Document generation done
         
         if status_callback:
             status_callback("Saving document...")
         
-        # Save document
-        if not generator.save(outpath):
-            return False, "Failed to save document"
+        master.save(outpath)
         
         if status_callback:
             status_callback("Adjusting formatting...")
