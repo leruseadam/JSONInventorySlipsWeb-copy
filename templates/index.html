@@ -147,14 +147,6 @@
         </div>
       </div>
       <hr>
-      <div class="mb-3">
-        <a href="{{ url_for('upload_pdfs') }}" class="btn btn-secondary">
-          <i class="fas fa-file-pdf"></i> Upload PDF Scans
-        </a>
-        <a href="{{ url_for('list_pdfs') }}" class="btn btn-outline-secondary ms-2">
-          <i class="fas fa-list"></i> View Uploaded PDFs
-        </a>
-      </div>
     </div>
   </div>
 </div>
@@ -191,34 +183,34 @@ function processJsonData() {
         },
         body: 'json_text=' + encodeURIComponent(jsonData)
     })
-    .then(response => {
-        if (response.redirected) {
-            window.location.href = response.url;
-        } else {
-            return response.json();
-        }
-    })
-    .then data => {
-        if (data && !data.success) {
-            alert('Error: ' + data.message);
-        }
-    })
-    .catch(error => {
-        alert('Error processing data: ' + error.message);
-    });
+  .then(response => {
+    if (response.redirected) {
+      window.location.href = response.url;
+    } else {
+      return response.json();
+    }
+  })
+  .then(data => {
+    if (data && !data.success) {
+      alert('Error: ' + data.message);
+    }
+  })
+  .catch(error => {
+    alert('Error processing data: ' + error.message);
+  });
 }
 
 document.getElementById('open_downloads_btn').addEventListener('click', function() {
-    fetch('{{ url_for("open_downloads") }}')
-      .then(response => response.json())
-      .then data => {
-          if (!data.success) {
-              alert('Failed to open downloads folder: ' + data.message);
-          }
-      })
-      .catch(err => {
-          alert('Error: ' + err);
-      });
+  fetch('{{ url_for("open_downloads") }}')
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success) {
+        alert('Failed to open downloads folder: ' + data.message);
+      }
+    })
+    .catch(err => {
+      alert('Error: ' + err);
+    });
 });
 
 function testChromeCompatibility() {
