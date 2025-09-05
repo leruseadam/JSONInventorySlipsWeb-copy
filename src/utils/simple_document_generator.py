@@ -38,7 +38,7 @@ class SimpleDocumentGenerator:
         for col_idx, width in enumerate(col_widths):
             for cell in table.columns[col_idx].cells:
                 cell.width = width
-        for row in table.rows:
+        for row_idx, row in enumerate(table.rows):
             tr = row._tr
             trPr = tr.get_or_add_trPr()
             trHeight = OxmlElement('w:trHeight')
@@ -55,6 +55,10 @@ class SimpleDocumentGenerator:
                     margin_elem.set(qn('w:w'), str(val))
                     margin_elem.set(qn('w:type'), 'dxa')
                     tcPr.append(margin_elem)
+                # Add invisible padding to all cells in the first row to enforce minimum height
+                if row_idx == 0 and not cell.text.strip():
+                    p = cell.add_paragraph()
+                    p.add_run('\u00A0')  # non-breaking space
         return table
         
     def _add_page_number(self, current_page, total_pages):
