@@ -80,9 +80,6 @@ from docx.shared import Pt, Inches
 from docxcompose.composer import Composer
 import configparser
 from werkzeug.utils import secure_filename
-import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image
 import sqlite3
 
 # Local imports
@@ -94,14 +91,6 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Tesseract diagnostics (must be after logger setup)
-import subprocess
-pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
-try:
-    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
-    logger.info(f"Tesseract version: {version.strip()}")
-except Exception as e:
-    logger.error(f"Could not get Tesseract version: {e}")
 import requests
 import pandas as pd
 from docxtpl import DocxTemplate
@@ -112,25 +101,10 @@ from docx.shared import Pt, Inches
 from docxcompose.composer import Composer
 import configparser
 from werkzeug.utils import secure_filename
-import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image
-import sqlite3
 
-# Local imports
+import sqlite3
 from src.utils.document_handler import DocumentHandler
 from src.ui.app import InventorySlipGenerator
-import subprocess
-
-# Explicitly set Tesseract binary path
-pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
-
-# Log Tesseract version at startup for diagnostics
-try:
-    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
-    logger.info(f"Tesseract version: {version.strip()}")
-except Exception as e:
-    logger.error(f"Could not get Tesseract version: {e}")
 
 
 # Update the compression constants
@@ -176,36 +150,7 @@ def compress_session_data(data):
         return base64.b64encode(compressed).decode('utf-8')
     except Exception as e:
         logger.error(f"Compression error: {str(e)}")
-        # Flask must be imported as the very first line
-        from flask import (
-            Flask, 
-            render_template, 
-            request, 
-            redirect, 
-            url_for, 
-            flash, 
-            jsonify, 
-            session, 
-            send_file, 
-            send_from_directory
-        )
-        compressed = compress_session_data(data)
-        clear_chunked_data(key)
-        chunks = [compressed[i:i + MAX_CHUNK_SIZE] for i in range(0, len(compressed), MAX_CHUNK_SIZE)]
-        if len(chunks) > 20:
-            raise ValueError(f"Data too large: {len(chunks)} chunks needed")
-        session[f'{key}_chunks'] = len(chunks)
-        for i, chunk in enumerate(chunks):
-            chunk_key = f'{key}_chunk_{i}'
-            if len(chunk) > MAX_CHUNK_SIZE:
-                raise ValueError(f"Chunk {i} exceeds maximum size")
-            session[chunk_key] = chunk
-        logger.info(f"Stored {len(chunks)} chunks for {key} (total size: {len(compressed)})")
-        return True
-    except Exception as e:
-        logger.error(f"Error storing chunked data: {str(e)}")
-        clear_chunked_data(key)
-        return False
+        return None
 
 def get_chunked_data(key):
     """Retrieve chunked data with improved error handling"""
@@ -365,59 +310,6 @@ def save_pdf_metadata(filename, ocr_text):
     conn.commit()
     conn.close()
 
-def extract_text_from_pdf(pdf_path):
-    try:
-        images = convert_from_path(pdf_path)
-        text = ""
-        for i, img in enumerate(images):
-            # Preprocess image: convert to grayscale and increase contrast
-            img = img.convert('L')  # Grayscale
-            from PIL import ImageEnhance
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.0)  # Increase contrast
-            logger.info(f"OCR page {i+1}: mode={img.mode}, size={img.size}")
-            ocr_result = pytesseract.image_to_string(img)
-            logger.info(f"OCR output for page {i+1}: {repr(ocr_result)}")
-            text += ocr_result + "\n"
-        return text.strip()
-    except Exception as e:
-        import traceback, os
-        error_details = traceback.format_exc()
-        tesseract_cmd = getattr(pytesseract.pytesseract, 'tesseract_cmd', None)
-        env_path = os.environ.get('PATH', '')
-        logger.error(f"OCR error: {e}\nDetails: {error_details}\nTesseract cmd: {tesseract_cmd}\nPATH: {env_path}")
-        return f"OCR error: {e}\nDetails: {error_details}\nTesseract cmd: {tesseract_cmd}\nPATH: {env_path}"
-
-@app.route('/upload_pdfs', methods=['GET', 'POST'])
-def upload_pdfs():
-    init_pdf_db()
-    if request.method == 'POST':
-        if 'pdfs' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
-        files = request.files.getlist('pdfs')
-        saved_files = []
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        for file in files:
-            if file and file.filename.lower().endswith('.pdf'):
-                temp_filename = file.filename
-                temp_save_path = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
-                file.save(temp_save_path)
-                # OCR processing
-                ocr_text = extract_text_from_pdf(temp_save_path)
-                # Extract Product Name from OCR text
-                import re
-                product_match = re.search(r'Medically Compliant\s*-\s*(.*?)\s*-\s*', ocr_text)
-                product_name = product_match.group(1).strip() if product_match else 'UnknownProduct'
-                # Clean product name for filename
-                safe_product_name = re.sub(r'[^A-Za-z0-9_\-]', '_', product_name)[:40]
-                new_filename = f"{safe_product_name}.pdf"
-                new_save_path = os.path.join(app.config['UPLOAD_FOLDER'], new_filename)
-                os.rename(temp_save_path, new_save_path)
-                save_pdf_metadata(new_filename, ocr_text)
-                saved_files.append(new_filename)
-        flash(f'Uploaded: {", ".join(saved_files)}')
-        return redirect(url_for('upload_pdfs'))
     return render_template('upload_pdfs.html')
 
 @app.route('/list_pdfs')
@@ -2321,96 +2213,7 @@ def fetch_api():
         flash(f'Error fetching API data: {str(e)}', 'error')
         return redirect(url_for('index'))
 
-def ensure_ocr_column():
-    conn = sqlite3.connect(PDF_DB_PATH)
-    c = conn.cursor()
-    # Check if ocr_text column exists
-    c.execute("PRAGMA table_info(pdf_inventory)")
-    columns = [row[1] for row in c.fetchall()]
-    if 'ocr_text' not in columns:
-        c.execute('ALTER TABLE pdf_inventory ADD COLUMN ocr_text TEXT')
-        conn.commit()
-    conn.close()
 
-# Call this before any insert/update to pdf_inventory
-ensure_ocr_column()
-
-@app.route('/download_pdf/<filename>')
-def download_pdf(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
-
-# Route to delete a PDF scan
-@app.route('/delete_pdf/<filename>', methods=['POST'])
-def delete_pdf(filename):
-    # Remove from DB
-    conn = sqlite3.connect(PDF_DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM pdf_inventory WHERE filename = ?', (filename,))
-    conn.commit()
-    conn.close()
-    # Remove file from uploads folder
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-    flash(f'Deleted {filename}')
-    return redirect(url_for('list_pdfs'))
-
-@app.route('/download_excel')
-def download_excel():
-    # Fetch PDF metadata and OCR text from DB
-    conn = sqlite3.connect(PDF_DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT filename, upload_date, ocr_text FROM pdf_inventory ORDER BY upload_date DESC')
-    pdfs = c.fetchall()
-    conn.close()
-    # Parse OCR text into structured columns
-    def parse_slip(text):
-        import re
-        lines = text.splitlines()
-        filtered = []
-        for line in lines:
-            if re.search(r'(\d{4}-\d{2}-\d{2}|JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate|Medically Compliant|SKU:|Initial Qty Issued:|Qty Received:)', line):
-                filtered.append(line.strip())
-        filtered_text = '\n'.join(filtered)
-        date = re.search(r'\d{4}-\d{2}-\d{2}', filtered_text)
-        vendor = re.search(r'JSM LLC|Only B\'s|Dank Czar|Flavour Bar|Omega Distillate', filtered_text)
-        product = re.search(r'(Medically Compliant.*?)(SKU:|$)', filtered_text, re.DOTALL)
-        sku = re.search(r'SKU:\s*(\d+)', filtered_text)
-        qty_issued = re.search(r'Initial Qty Issued:\s*\|?\s*(\d+)?', filtered_text)
-        qty_received = re.search(r'Qty Received:\s*\|?\s*(\d+)?', filtered_text)
-        return {
-            'date': date.group(0) if date else '',
-            'vendor': vendor.group(0) if vendor else '',
-            'product': product.group(1).replace('\n', ' ').strip() if product else '',
-            'sku': sku.group(1) if sku else '',
-            'qty_issued': qty_issued.group(1) if qty_issued else '',
-            'qty_received': qty_received.group(1) if qty_received else ''
-        }
-    rows = []
-    for filename, upload_date, ocr_text in pdfs:
-        slip = parse_slip(ocr_text or '')
-        rows.append({
-            'Filename': filename,
-            'Upload Date': upload_date,
-            'Date': slip['date'],
-            'Vendor': slip['vendor'],
-            'Product': slip['product'],
-            'SKU': slip['sku'],
-            'Initial Qty Issued': slip['qty_issued'],
-            'Qty Received': slip['qty_received']
-        })
-    import pandas as pd
-    df = pd.DataFrame(rows)
-    from io import BytesIO
-    output = BytesIO()
-    df.to_excel(output, index=False)
-    output.seek(0)
-    # Use product name from first slip for filename
-    excel_name = 'scanned_pdfs.xlsx'
-    if len(rows) > 0 and rows[0]['Vendor']:
-        safe_vendor_name = re.sub(r'[^A-Za-z0-9_\-]', '_', rows[0]['Vendor'])[:40]
-        excel_name = f"{safe_vendor_name}_inventory.xlsx"
-    return send_file(output, download_name=excel_name, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
     try:
