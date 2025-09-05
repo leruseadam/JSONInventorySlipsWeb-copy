@@ -20,13 +20,13 @@ class SimpleDocumentGenerator:
         
     def _setup_document(self):
         """Set up initial document properties"""
-        # Set margins
+        # Set larger top/bottom margins for better appearance
         sections = self.doc.sections
         for section in sections:
-            section.top_margin = Inches(0.5)
-            section.bottom_margin = Inches(0.5)
-            section.left_margin = Inches(0.5)
-            section.right_margin = Inches(0.5)
+            section.top_margin = Inches(1.25)
+            section.bottom_margin = Inches(1.25)
+            section.left_margin = Inches(0.75)
+            section.right_margin = Inches(0.75)
             
     def _create_table(self, rows=2, cols=2):
         """Create a table with specified dimensions"""
@@ -50,28 +50,32 @@ class SimpleDocumentGenerator:
         page_number.font.size = Pt(10)
         
     def _add_label(self, cell, data):
-        """Add formatted content to a cell"""
+        """Add formatted and centered content to a cell"""
         # Product Name
         p = cell.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         name_run = p.add_run(data.get('ProductName', ''))
         name_run.font.name = 'Arial'
         name_run.font.size = Pt(12)
         name_run.font.bold = True
-        
+
         # Barcode
         p = cell.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         barcode_run = p.add_run(f"Barcode: {data.get('Barcode', '')}")
         barcode_run.font.name = 'Arial'
         barcode_run.font.size = Pt(10)
-        
+
         # Quantity
         p = cell.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         qty_run = p.add_run(f"Quantity: {data.get('QuantityReceived', '')}")
         qty_run.font.name = 'Arial'
         qty_run.font.size = Pt(10)
-        
+
         # Date and Vendor
         p = cell.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         date_vendor_run = p.add_run(f"Date: {data.get('AcceptedDate', '')} | Vendor: {data.get('Vendor', '')}")
         date_vendor_run.font.name = 'Arial'
         date_vendor_run.font.size = Pt(9)
