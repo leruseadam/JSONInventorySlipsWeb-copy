@@ -59,7 +59,10 @@ class DocumentHandler:
                                 if old_text in run.text:
                                     run.text = run.text.replace(old_text, str(new_text))
                                     run.font.name = 'Arial'
-                                    run.font.size = Pt(11)
+                                    if old_text == f'{{{{Label{idx}.QuantityReceived}}}}':
+                                        run.font.size = Pt(12)
+                                    else:
+                                        run.font.size = Pt(11)
 
                 # Clean up unused placeholders for this chunk
                 for idx in range(len(chunk) + 1, 5):
