@@ -1,3 +1,28 @@
+/* Enhanced Progress Modal Styles */
+.modal-content.bg-dark {
+    background: #232336 !important;
+    color: #f1f3f6;
+    border-radius: 18px;
+    box-shadow: 0 4px 32px rgba(0,0,0,0.25);
+}
+.modal-header .spinner-border {
+    margin-bottom: 0.5rem;
+}
+.modal-title.animate__animated {
+    animation-duration: 1.5s;
+}
+.progress-bar.bg-info {
+    background-color: #89B4FA !important;
+}
+.modal-body .progress {
+    background: #232336;
+    border-radius: 0.75rem;
+    height: 1.5rem;
+}
+.modal-body .progress-bar {
+    font-size: 1.1em;
+    border-radius: 0.75rem;
+}
 /* General styles */
 body {
     background: #1E1E2E;
