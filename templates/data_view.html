@@ -204,28 +204,18 @@ document.addEventListener('DOMContentLoaded', function() {
         generateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    // Remove any drag event listeners from rows that should not be draggable
+    // Make all product rows draggable and highlighted
     document.querySelectorAll('#productsTableBody tr.group-product-row').forEach(row => {
-        const idx = parseInt(row.getAttribute('data-index'));
-        const group = parseInt(row.getAttribute('data-group'));
-        if (!isNaN(idx) && !isNaN(group) && (idx - group * 4) > 3) {
-            row.setAttribute('draggable', 'false');
-            row.style.opacity = '0.5';
-            row.style.pointerEvents = 'none';
-            row.classList.add('not-draggable');
-        } else {
-            // Only attach drag event listeners to draggable rows
-            row.setAttribute('draggable', 'true');
-            row.style.opacity = '';
-            row.style.pointerEvents = '';
-            row.classList.remove('not-draggable');
-            row.addEventListener('dragstart', handleDragStart);
-            row.addEventListener('dragover', handleDragOver);
-            row.addEventListener('dragenter', handleDragEnter);
-            row.addEventListener('dragleave', handleDragLeave);
-            row.addEventListener('drop', handleDrop);
-            row.addEventListener('dragend', handleDragEnd);
-        }
+        row.setAttribute('draggable', 'true');
+        row.style.opacity = '';
+        row.style.pointerEvents = '';
+        row.classList.remove('not-draggable');
+        row.addEventListener('dragstart', handleDragStart);
+        row.addEventListener('dragover', handleDragOver);
+        row.addEventListener('dragenter', handleDragEnter);
+        row.addEventListener('dragleave', handleDragLeave);
+        row.addEventListener('drop', handleDrop);
+        row.addEventListener('dragend', handleDragEnd);
     });
 });
     
