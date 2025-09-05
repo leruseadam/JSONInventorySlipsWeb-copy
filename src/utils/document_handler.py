@@ -19,7 +19,7 @@ class DocumentHandler:
         return self.doc
 
     def add_content_to_table(self, records):
-        """Add content to document replacing placeholders"""
+        """Add content to document replacing placeholders (optimized)"""
         if not records or not isinstance(records, list):
             return False
 
@@ -27,12 +27,11 @@ class DocumentHandler:
             # Process records in chunks of 4 (for template layout)
             for chunk_index, i in enumerate(range(0, len(records), 4)):
                 chunk = records[i:i + 4]
-                
+
                 if chunk_index > 0:
-                    # Add page break between chunks
                     self.doc.add_page_break()
-                
-                # Find all paragraphs and tables in the document
+
+                # Only process paragraphs/runs that contain placeholders
                 all_paragraphs = []
                 for paragraph in self.doc.paragraphs:
                     all_paragraphs.append(paragraph)
@@ -41,6 +40,24 @@ class DocumentHandler:
                         for cell in row.cells:
                             for paragraph in cell.paragraphs:
                                 all_paragraphs.append(paragraph)
+
+                # Build a set of all placeholders for this chunk
+                placeholders = set()
+                for idx in range(1, 5):
+                    placeholders.update({
+                        f'{{{{Label{idx}.AcceptedDate}}}}',
+                        f'{{{{Label{idx}.Vendor}}}}',
+                        f'{{{{Label{idx}.ProductName}}}}',
+                        f'{{{{Label{idx}.Barcode}}}}',
+                        f'{{{{Label{idx}.QuantityReceived}}}}'
+                    })
+
+                # Only keep paragraphs/runs that contain any placeholder
+                relevant_runs = []
+                for paragraph in all_paragraphs:
+                    for run in paragraph.runs:
+                        if any(ph in run.text for ph in placeholders):
+                            relevant_runs.append(run)
 
                 # Replace placeholders for each record in chunk
                 for idx, record in enumerate(chunk, 1):
@@ -51,18 +68,15 @@ class DocumentHandler:
                         f'{{{{Label{idx}.Barcode}}}}': record.get('Barcode*', ''),
                         f'{{{{Label{idx}.QuantityReceived}}}}': str(record.get('Quantity Received*', ''))
                     }
-                    
-                    # Apply replacements in all paragraphs
-                    for paragraph in all_paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, str(new_text))
-                                    run.font.name = 'Arial'
-                                    if old_text == f'{{{{Label{idx}.QuantityReceived}}}}':
-                                        run.font.size = Pt(12)
-                                    else:
-                                        run.font.size = Pt(11)
+                    for run in relevant_runs:
+                        for old_text, new_text in replacements.items():
+                            if old_text in run.text:
+                                run.text = run.text.replace(old_text, str(new_text))
+                                run.font.name = 'Arial'
+                                if old_text == f'{{{{Label{idx}.QuantityReceived}}}}':
+                                    run.font.size = Pt(12)
+                                else:
+                                    run.font.size = Pt(11)
 
                 # Clean up unused placeholders for this chunk
                 for idx in range(len(chunk) + 1, 5):
@@ -73,12 +87,10 @@ class DocumentHandler:
                         f'{{{{Label{idx}.Barcode}}}}': '',
                         f'{{{{Label{idx}.QuantityReceived}}}}': ''
                     }
-                    
-                    for paragraph in all_paragraphs:
-                        for run in paragraph.runs:
-                            for old_text, new_text in empty_replacements.items():
-                                if old_text in run.text:
-                                    run.text = run.text.replace(old_text, '')
+                    for run in relevant_runs:
+                        for old_text, new_text in empty_replacements.items():
+                            if old_text in run.text:
+                                run.text = run.text.replace(old_text, '')
 
             return True
 
