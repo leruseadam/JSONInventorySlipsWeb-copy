@@ -292,9 +292,30 @@ function generateSlips() {
         body: formData
     })
     .then(function(response) {
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
+        // Check for timeout/session expired
+        if (response.status === 440) {
+            return response.json().then(function(data) {
+                if (progressModal) {
+                    progressModal.hide();
+                }
+                // Show timeout message and redirect
+                const message = data.message || 'Your session has expired. Please refresh the page and reupload your data.';
+                alert(message);
+                if (data.redirect) {
+                    window.location.href = data.redirect;
+                } else {
+                    window.location.reload();
+                }
+                throw new Error('Session timeout');
+            });
         }
+        
+        if (!response.ok) {
+            return response.json().then(function(errorData) {
+                throw new Error(errorData.message || 'Network response was not ok');
+            });
+        }
+        
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
         let filename = 'inventory_slips.docx';
@@ -329,7 +350,9 @@ function generateSlips() {
         if (progressModal) {
             progressModal.hide();
         }
-        alert('Error generating slips: ' + error.message);
+        if (error.message !== 'Session timeout') {
+            alert('Error generating slips: ' + error.message);
+        }
     });
 }
 
@@ -358,9 +381,30 @@ function generateRobustSlips() {
         body: formData
     })
     .then(function(response) {
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
+        // Check for timeout/session expired
+        if (response.status === 440) {
+            return response.json().then(function(data) {
+                if (progressModal) {
+                    progressModal.hide();
+                }
+                // Show timeout message and redirect
+                const message = data.message || 'Your session has expired. Please refresh the page and reupload your data.';
+                alert(message);
+                if (data.redirect) {
+                    window.location.href = data.redirect;
+                } else {
+                    window.location.reload();
+                }
+                throw new Error('Session timeout');
+            });
         }
+        
+        if (!response.ok) {
+            return response.json().then(function(errorData) {
+                throw new Error(errorData.message || 'Network response was not ok');
+            });
+        }
+        
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
         let filename = 'order_sheet.docx';
@@ -395,7 +439,9 @@ function generateRobustSlips() {
         if (progressModal) {
             progressModal.hide();
         }
-        alert('Error generating Order Sheet: ' + error.message);
+        if (error.message !== 'Session timeout') {
+            alert('Error generating Order Sheet: ' + error.message);
+        }
     });
 }
 

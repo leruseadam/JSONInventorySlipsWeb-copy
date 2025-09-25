@@ -383,8 +383,69 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',  # More permissive than 'Strict' for Chrome
     SESSION_COOKIE_PATH='/',
-    PERMANENT_SESSION_LIFETIME=3600,  # 1 hour
+    PERMANENT_SESSION_LIFETIME=1800,  # 30 minutes
 )
+
+# Session timeout detection
+def is_session_expired():
+    """Check if session has expired or data is corrupted"""
+    try:
+        # Check if session has basic required data
+        last_activity = session.get('last_activity')
+        if not last_activity:
+            return True
+            
+        # Check if more than 30 minutes have passed
+        from datetime import datetime, timedelta
+        last_activity_time = datetime.fromisoformat(last_activity)
+        if datetime.now() - last_activity_time > timedelta(minutes=30):
+            return True
+            
+        # Validate data integrity
+        df_json = get_chunked_data('df_json')
+        if df_json is None:
+            return True
+            
+        return False
+    except Exception as e:
+        logger.warning(f"Session validation error: {e}")
+        return True
+
+def update_session_activity():
+    """Update last activity timestamp"""
+    from datetime import datetime
+    session['last_activity'] = datetime.now().isoformat()
+
+# Session timeout configuration
+SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
+
+def is_session_valid():
+    """Check if the current session is still valid and not timed out"""
+    try:
+        # Check if session has a timestamp
+        last_activity = session.get('last_activity')
+        if not last_activity:
+            return False
+        
+        # Check if session has timed out
+        current_time = time.time()
+        if current_time - last_activity > SESSION_TIMEOUT_SECONDS:
+            return False
+        
+        # Check if session has required data
+        df_json = get_chunked_data('df_json')
+        if df_json is None:
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error checking session validity: {str(e)}")
+        return False
+
+def update_session_activity():
+    """Update the last activity timestamp in the session"""
+    session['last_activity'] = time.time()
+    session.permanent = True
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
@@ -1534,23 +1595,46 @@ def data_view():
 def generate_slips():
     """Generate inventory slips using the original template-based method"""
     try:
+        # Check if session is valid and not timed out
+        if not is_session_valid():
+            return jsonify({
+                'success': False, 
+                'timeout': True,
+                'message': 'Your session has timed out due to inactivity. Please refresh the page and reupload your data to continue.'
+            }), 440  # Session timeout status code
+        
+        # Update session activity
+        update_session_activity()
+        
         # Get selected products
         selected_indices = request.form.getlist('selected_indices[]')
         
         if not selected_indices:
-            flash('No products selected.')
-            return redirect(url_for('data_view'))
+            return jsonify({
+                'success': False,
+                'message': 'No products selected.'
+            }), 400
         
         # Convert indices to integers
-        selected_indices = [int(idx) for idx in selected_indices]
+        try:
+            selected_indices = [int(idx) for idx in selected_indices]
+        except ValueError:
+            return jsonify({
+                'success': False,
+                'message': 'Invalid product selection.'
+            }), 400
+            
         logger.info(f"Selected indices: {selected_indices}")
         
         # Load data from session using chunked data
         df_json = get_chunked_data('df_json')
         
         if df_json is None:
-            flash('No data available. Please load data first.')
-            return redirect(url_for('index'))
+            return jsonify({
+                'success': False,
+                'timeout': True,
+                'message': 'Session data is no longer available. Please refresh the page and reupload your data.'
+            }), 440
         
         # Convert JSON to DataFrame
         try:
@@ -1560,11 +1644,21 @@ def generate_slips():
                 df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
-            flash('Error loading data. Please try again.')
-            return redirect(url_for('data_view'))
+            return jsonify({
+                'success': False,
+                'timeout': True,
+                'message': 'Data appears to be corrupted. Please refresh the page and reupload your data.'
+            }), 440
         
         logger.info(f"DataFrame shape: {df.shape}")
         logger.info(f"DataFrame columns: {df.columns.tolist()}")
+        
+        # Validate selected indices
+        if max(selected_indices) >= len(df):
+            return jsonify({
+                'success': False,
+                'message': 'Invalid product selection - some selected items no longer exist.'
+            }), 400
         
         # Get only selected rows
         selected_df = df.iloc[selected_indices].copy()
@@ -1597,8 +1691,10 @@ def generate_slips():
             # Validate the generated file
             if not validate_docx(result):
                 logger.error("Generated document failed validation")
-                flash('Generated document appears to be corrupted. Please try again.')
-                return redirect(url_for('data_view'))
+                return jsonify({
+                    'success': False,
+                    'message': 'Generated document appears to be corrupted. Please try again.'
+                }), 500
             
             # Return the file for download
             return send_file(
@@ -1609,13 +1705,17 @@ def generate_slips():
             )
         else:
             logger.error(f"Document generation failed: {result}")
-            flash(f'Failed to generate inventory slips: {result}')
-            return redirect(url_for('data_view'))
+            return jsonify({
+                'success': False,
+                'message': f'Failed to generate inventory slips: {result}'
+            }), 500
     
     except Exception as e:
         logger.error(f"Error in generate_slips: {str(e)}", exc_info=True)
-        flash(f'Error generating slips: {str(e)}')
-        return redirect(url_for('data_view'))
+        return jsonify({
+            'success': False,
+            'message': f'Error generating slips: {str(e)}'
+        }), 500
 
 # To this:
 @app.route('/generate_robust_slips_docx', methods=['POST'])
