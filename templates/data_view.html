@@ -502,6 +502,16 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+    
+    // Initialize all select checkboxes to checked state since products are pre-selected
+    updateSelectAllCheckbox();
+    
+    // Initialize all group select all checkboxes
+    document.querySelectorAll('.group-select-all').forEach(groupCheckbox => {
+        const group = groupCheckbox.getAttribute('data-group');
+        const groupCheckboxes = Array.from(document.querySelectorAll(`.product-checkbox[data-group="${group}"]`));
+        groupCheckbox.checked = groupCheckboxes.every(cb => cb.checked);
+    });
 });
 
 // Transfer Data Functions
