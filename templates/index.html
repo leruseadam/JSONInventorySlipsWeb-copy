@@ -1,4 +1,10 @@
-{% extends "base.html" %}
+{% extends "base              <label for="json_url" class="form-label">Import from URL</label>
+              <div class="input-group">
+                <input type="url" class="form-control" id="json_url" name="url" placeholder="Enter JSON URL..." required autocomplete="off">
+                <button class="btn btn-primary" type="button" onclick="loadFromURL()">
+                  <i class="fas fa-download"></i> Load
+                </button>
+              </div>%}
 
 {% block title %}Home - Inventory Slip Generator{% endblock %}
 
