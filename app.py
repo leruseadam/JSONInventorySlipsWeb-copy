@@ -388,64 +388,51 @@ app.config.update(
 
 # Session timeout detection
 def is_session_expired():
-    """Check if session has expired or data is corrupted"""
-    try:
-        # Check if session has basic required data
-        last_activity = session.get('last_activity')
-        if not last_activity:
-            return True
-            
-        # Check if more than 30 minutes have passed
-        from datetime import datetime, timedelta
-        last_activity_time = datetime.fromisoformat(last_activity)
-        if datetime.now() - last_activity_time > timedelta(minutes=30):
-            return True
-            
-        # Validate data integrity
-        df_json = get_chunked_data('df_json')
-        if df_json is None:
-            return True
-            
-        return False
-    except Exception as e:
-        logger.warning(f"Session validation error: {e}")
-        return True
+    """Deprecated: retained for backward compatibility. Use is_session_valid instead."""
+    return not is_session_valid()
 
 def update_session_activity():
-    """Update last activity timestamp"""
-    from datetime import datetime
-    session['last_activity'] = datetime.now().isoformat()
+    """Update last activity timestamp (epoch seconds)."""
+    session['last_activity'] = time.time()
+    session.permanent = True
 
 # Session timeout configuration
 SESSION_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 def is_session_valid():
-    """Check if the current session is still valid and not timed out"""
+    """Check if the current session is still valid and not timed out.
+
+    Supports both legacy ISO string timestamps and current epoch seconds.
+    """
     try:
-        # Check if session has a timestamp
         last_activity = session.get('last_activity')
         if not last_activity:
             return False
-        
-        # Check if session has timed out
+
         current_time = time.time()
-        if current_time - last_activity > SESSION_TIMEOUT_SECONDS:
+        # Normalize last_activity to epoch seconds
+        if isinstance(last_activity, (int, float)):
+            last_activity_ts = float(last_activity)
+        else:
+            # Attempt parse ISO format
+            try:
+                from datetime import datetime
+                last_activity_ts = datetime.fromisoformat(str(last_activity)).timestamp()
+            except Exception:
+                return False
+
+        if current_time - last_activity_ts > SESSION_TIMEOUT_SECONDS:
             return False
-        
-        # Check if session has required data
+
         df_json = get_chunked_data('df_json')
         if df_json is None:
             return False
-            
         return True
     except Exception as e:
         logger.error(f"Error checking session validity: {str(e)}")
         return False
 
-def update_session_activity():
-    """Update the last activity timestamp in the session"""
-    session['last_activity'] = time.time()
-    session.permanent = True
+# NOTE: second definition removed by consolidation above.
 
 # Helper function to get resource path (for templates)
 def resource_path(relative_path):
