@@ -91,21 +91,21 @@
   <div class="row">
     <div class="col-md-12">
       <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header">
           <h5 class="mb-0"><i class="fas fa-table"></i> Imported Data</h5>
-          <div>
-            <button class="btn btn-primary" onclick="selectAll()" title="Select all products">
-              <i class="fas fa-check-square" aria-hidden="true"></i> Select All
-            </button>
-            <button class="btn btn-secondary" onclick="deselectAll()" title="Deselect all products">
-              <i class="fas fa-square" aria-hidden="true"></i> Deselect All
-            </button>
-          </div>
         </div>
         <div class="card-body">
           <div class="alert alert-info mb-3 table-tip-alert" style="font-size: 0.95em;">
             <i class="fas fa-arrows-alt-v"></i>
             <strong>Tip:</strong> You can reorder products in the table below by dragging and dropping the rows.
+          </div>
+          <div class="d-flex justify-content-end mb-3">
+            <button class="btn btn-primary me-2" onclick="selectAll()" title="Select all products">
+              <i class="fas fa-check-square" aria-hidden="true"></i> Select All
+            </button>
+            <button class="btn btn-secondary" onclick="deselectAll()" title="Deselect all products">
+              <i class="fas fa-square" aria-hidden="true"></i> Deselect All
+            </button>
           </div>
           <div class="table-responsive">
             <table class="table table-hover table-inventory">
