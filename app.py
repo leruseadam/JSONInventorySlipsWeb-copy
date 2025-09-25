@@ -1388,24 +1388,52 @@ def load_url():
         print(f"URL received: {url}")
         if not url:
             print("No URL provided")
-            flash('Please enter a URL')
+            flash('Please enter a URL', 'error')
             return redirect(url_for('index'))
+            
+        # Basic URL validation
+        if not (url.startswith('http://') or url.startswith('https://')):
+            flash('Please enter a valid URL starting with http:// or https://', 'error')
+            return redirect(url_for('index'))
+            
         result_df, format_type, raw_data = load_from_url(url)
         print(f"Result DataFrame: {result_df}")
         print(f"Format type: {format_type}")
         print(f"Raw data: {str(raw_data)[:500]}")
+        
+        if result_df is None or result_df.empty:
+            flash('No valid data found at the provided URL. Please check the URL and try again.', 'warning')
+            return redirect(url_for('index'))
+        
+        # Clear existing data and store new data
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
+            
         if not store_chunked_data('df_json', result_df):
             print("Failed to store DataFrame")
-            raise Exception("Failed to store DataFrame")
+            flash('Failed to store data. The dataset may be too large. Please try a smaller dataset.', 'error')
+            return redirect(url_for('index'))
+            
+        # Store format type and raw data if available
+        session['format_type'] = format_type
+        if raw_data and len(str(raw_data)) < 10000:  # Only store if not too large
+            store_chunked_data('raw_json', json.dumps(raw_data))
+            
+        flash(f'Successfully loaded {len(result_df)} records from {format_type} data source.', 'success')
         print("Redirecting to data_view")
         return redirect(url_for('data_view'))
+        
+    except ValueError as e:
+        # These are user-friendly errors from load_from_url
+        logger.error(f'ValueError loading data from URL: {str(e)}')
+        flash(str(e), 'error')
+        return redirect(url_for('index'))
     except Exception as e:
-        logger.error(f'Error loading data from URL: {str(e)}\n{traceback.format_exc()}')
+        # Unexpected errors
+        logger.error(f'Unexpected error loading data from URL: {str(e)}\n{traceback.format_exc()}')
         print(f"Error loading data from URL: {str(e)}\n{traceback.format_exc()}")
-        flash(f'Error loading data: {str(e)}')
-    return redirect(url_for('index'))
+        flash('An unexpected error occurred while loading data. Please try again or contact support.', 'error')
+        return redirect(url_for('index'))
     
 def handle_bamboo_url(url):
     try:
@@ -1433,7 +1461,18 @@ def load_from_url(url):
     import traceback
     try:
         import ijson
-        with requests.get(url, timeout=120, stream=True) as response:
+        # Add headers to mimic a real browser and avoid bot detection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+        
+        with requests.get(url, timeout=30, stream=True, headers=headers, allow_redirects=True) as response:
             response.raise_for_status()
             content_type = response.headers.get('Content-Type', '').lower()
             raw_text = response.text
@@ -1478,10 +1517,48 @@ def load_from_url(url):
                         return df, 'CSV', None
                     except Exception as e:
                         raise ValueError(f"Unsupported data format or failed to parse: {e}")
+                        
+    except requests.exceptions.ConnectionError as e:
+        error_msg = "Connection refused: Unable to connect to the server. The URL may be incorrect or the server may be down."
+        logger.error(f"Connection error for URL {url}: {str(e)}")
+        raise ValueError(error_msg)
+    except requests.exceptions.Timeout as e:
+        error_msg = "Request timed out: The server took too long to respond. Please try again later."
+        logger.error(f"Timeout error for URL {url}: {str(e)}")
+        raise ValueError(error_msg)
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response else "Unknown"
+        if status_code == 401:
+            error_msg = "Authentication failed: Invalid or expired API key. Please check your credentials."
+        elif status_code == 403:
+            error_msg = "Access forbidden: You don't have permission to access this resource. Check your API permissions."
+        elif status_code == 404:
+            error_msg = "Resource not found: The requested URL or endpoint doesn't exist. Please verify the URL."
+        elif status_code == 429:
+            error_msg = "Rate limit exceeded: Too many requests. Please wait a moment and try again."
+        elif status_code >= 500:
+            error_msg = f"Server error ({status_code}): The remote server is experiencing issues. Please try again later."
+        else:
+            error_msg = f"HTTP error ({status_code}): Unable to fetch data from the provided URL."
+        logger.error(f"HTTP error {status_code} for URL {url}: {str(e)}")
+        raise ValueError(error_msg)
+    except requests.exceptions.InvalidURL as e:
+        error_msg = "Invalid URL format: Please check that the URL is properly formatted and includes http:// or https://"
+        logger.error(f"Invalid URL {url}: {str(e)}")
+        raise ValueError(error_msg)
+    except requests.exceptions.TooManyRedirects as e:
+        error_msg = "Too many redirects: The URL redirects too many times. Please check the URL or contact the provider."
+        logger.error(f"Too many redirects for URL {url}: {str(e)}")
+        raise ValueError(error_msg)
+    except json.JSONDecodeError as e:
+        error_msg = "Invalid JSON format: The response contains malformed JSON data. Please verify the URL provides valid JSON."
+        logger.error(f"JSON decode error for URL {url}: {str(e)}")
+        raise ValueError(error_msg)
     except Exception as e:
-        logger.error(f"Failed to load data from URL: {str(e)}\n{traceback.format_exc()}")
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(f"Failed to load data from URL {url}: {str(e)}\n{traceback.format_exc()}")
         print(f"Failed to load data from URL: {str(e)}\n{traceback.format_exc()}")
-        raise ValueError(f"Failed to load data from URL: {e}")
+        raise ValueError(error_msg)
     
 
 
