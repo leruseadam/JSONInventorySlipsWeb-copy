@@ -1635,21 +1635,82 @@ def data_view():
             }
             products.append(product)
 
-        # Group by weight, sort alphabetically, then split into subgroups of 4
-        from collections import defaultdict
-        grouped = defaultdict(list)
-        for product in products:
-            key = str(product.get('weight', 'Unknown'))
-            grouped[key].append(product)
-        sorted_groups = []
-        for group_key in sorted(grouped.keys()):
-            group_products = sorted(grouped[group_key], key=lambda x: x['name'].lower())
-            # Split group_products into chunks of 4
-            for i in range(0, len(group_products), 4):
-                sorted_groups.append({
-                    'group_label': group_key,
-                    'products': group_products[i:i+4]
-                })
+        # Smart grouping by similar product terms, then alphabetical
+        def create_smart_groups(products):
+            """Group products by similar terms first, then alphabetically within groups"""
+            from collections import defaultdict
+            import re
+            
+            # Define priority terms to group by (case insensitive)
+            priority_terms = [
+                'vaporizer',
+                'honey crystal', 
+                'rosin',
+                'shatter',
+                'wax',
+                'live resin',
+                'distillate',
+                'cart',
+                'cartridge',
+                'edible',
+                'gummies',
+                'chocolate',
+                'flower',
+                'pre-roll',
+                'joint',
+                'hash',
+                'kief',
+                'tincture',
+                'oil',
+                'capsule',
+                'topical',
+                'cream',
+                'balm'
+            ]
+            
+            # Group products by matching terms
+            term_groups = defaultdict(list)
+            unmatched_products = []
+            
+            for product in products:
+                product_name = product['name'].lower()
+                matched = False
+                
+                # Check for priority terms
+                for term in priority_terms:
+                    if term in product_name:
+                        term_groups[term.title()].append(product)
+                        matched = True
+                        break
+                
+                if not matched:
+                    unmatched_products.append(product)
+            
+            # Sort each term group alphabetically
+            sorted_groups = []
+            for term in sorted(term_groups.keys()):
+                group_products = sorted(term_groups[term], key=lambda x: x['name'].lower())
+                # Split into chunks of 4
+                for i in range(0, len(group_products), 4):
+                    sorted_groups.append({
+                        'group_label': f"{term} Products",
+                        'products': group_products[i:i+4]
+                    })
+            
+            # Add unmatched products, grouped alphabetically
+            if unmatched_products:
+                unmatched_sorted = sorted(unmatched_products, key=lambda x: x['name'].lower())
+                # Split into chunks of 4
+                for i in range(0, len(unmatched_sorted), 4):
+                    group_start_letter = unmatched_sorted[i]['name'][0].upper() if unmatched_sorted[i]['name'] else 'Other'
+                    sorted_groups.append({
+                        'group_label': f"Other Products ({group_start_letter}+)",
+                        'products': unmatched_sorted[i:i+4]
+                    })
+            
+            return sorted_groups
+
+        sorted_groups = create_smart_groups(products)
 
         # Load configuration
         config = load_config()
