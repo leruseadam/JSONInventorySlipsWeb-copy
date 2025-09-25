@@ -235,6 +235,23 @@ document.addEventListener('DOMContentLoaded', function() {
     progressBar = document.querySelector('.progress-bar');
     progressText = document.getElementById('progressText');
 
+    // Heartbeat to keep session alive & detect impending timeout (every 4 minutes)
+    function sessionHeartbeat() {
+        fetch('/session/ping').then(r => {
+            if (r.status === 440) {
+                r.json().then(() => {
+                    alert('Session expired. Please refresh and reupload your data.');
+                    window.location.reload();
+                });
+                return;
+            }
+            return r.json();
+        }).catch(() => {/* ignore network errors */});
+    }
+    // Initial ping and interval
+    sessionHeartbeat();
+    setInterval(sessionHeartbeat, 240000); // 4 minutes
+
     // Initialize search functionality
     const searchInput = document.getElementById('searchInput');
     if (searchInput) {

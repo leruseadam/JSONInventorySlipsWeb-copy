@@ -1702,6 +1702,12 @@ def data_view():
         # Load configuration
         config = load_config()
 
+        # Refresh session activity so user can immediately generate slips
+        try:
+            update_session_activity()
+        except Exception as e:
+            logger.warning(f"Failed to update session activity on data_view: {e}")
+
         return render_template(
             'data_view.html',
             groups=sorted_groups,
@@ -1720,13 +1726,19 @@ def data_view():
 def generate_slips():
     """Generate inventory slips using the original template-based method"""
     try:
-        # Check if session is valid and not timed out
+        # Check if session is valid and not timed out. Attempt recovery if data still present.
         if not is_session_valid():
-            return jsonify({
-                'success': False, 
-                'timeout': True,
-                'message': 'Your session has timed out due to inactivity. Please refresh the page and reupload your data to continue.'
-            }), 440  # Session timeout status code
+            logger.info("Session reported invalid at generation start; attempting recovery.")
+            df_json_recover = get_chunked_data('df_json')
+            if df_json_recover is not None:
+                update_session_activity()
+                logger.info("Recovered session using existing df_json data.")
+            else:
+                return jsonify({
+                    'success': False,
+                    'timeout': True,
+                    'message': 'Your session has timed out due to inactivity. Please refresh the page and reupload your data to continue.'
+                }), 440  # Session timeout status code
         
         # Update session activity
         update_session_activity()
@@ -1841,6 +1853,19 @@ def generate_slips():
             'success': False,
             'message': f'Error generating slips: {str(e)}'
         }), 500
+
+@app.route('/session/ping', methods=['GET'])
+def session_ping():
+    """Keep-alive endpoint to refresh session activity while user is active on data view.
+    Returns 440 if the session has expired so the client can prompt for reload."""
+    try:
+        if not is_session_valid():
+            return jsonify({'ok': False, 'timeout': True}), 440
+        update_session_activity()
+        return jsonify({'ok': True, 'ts': time.time()})
+    except Exception as e:
+        logger.warning(f"Session ping error: {e}")
+        return jsonify({'ok': False}), 500
 
 # To this:
 @app.route('/generate_robust_slips_docx', methods=['POST'])
