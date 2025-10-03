@@ -234,7 +234,7 @@ function testChromeCompatibility() {
     const resultDiv = document.getElementById('chrome-test-result');
     resultDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Testing...';
     
-    fetch('{{ url_for("debug_session") }}')
+    fetch('{{ url_for("session_ping") }}')
         .then(response => response.json())
         .then(data => {
             if (data.success) {
