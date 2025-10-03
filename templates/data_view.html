@@ -227,7 +227,13 @@ let progressBar;
 let progressText;
 
 document.addEventListener('DOMContentLoaded', function() {
-    progressModal = new bootstrap.Modal(document.getElementById('progressModal'));
+    // Initialize lazily; some browsers delay modal bindings
+    try {
+        const modalEl = document.getElementById('progressModal');
+        if (modalEl) {
+            progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        }
+    } catch (e) { /* ignore */ }
     mainProgressBarEl = document.getElementById('mainProgressBar');
     progressPhaseEl = document.getElementById('progressPhase');
     progressPercentEl = document.getElementById('progressPercent');
@@ -278,6 +284,20 @@ document.addEventListener('DOMContentLoaded', function() {
         row.addEventListener('dragend', handleDragEnd);
     });
 });
+
+// Ensure modal and references are ready when user clicks generate
+function ensureProgressModalReady() {
+    if (!progressModal) {
+        const modalEl = document.getElementById('progressModal');
+        if (modalEl) {
+            progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        }
+    }
+    if (!mainProgressBarEl) mainProgressBarEl = document.getElementById('mainProgressBar');
+    if (!progressPhaseEl) progressPhaseEl = document.getElementById('progressPhase');
+    if (!progressPercentEl) progressPercentEl = document.getElementById('progressPercent');
+    if (!statusChecklistEl) statusChecklistEl = document.getElementById('statusChecklist');
+}
     
 function selectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
@@ -342,6 +362,7 @@ function updateProgress(percent, text, phaseIndex=1) {
 }
 
 function generateSlips() {
+    ensureProgressModalReady();
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
 
@@ -441,6 +462,7 @@ function generateSlips() {
 }
 
 function generateRobustSlips() {
+    ensureProgressModalReady();
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
 
