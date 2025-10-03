@@ -70,6 +70,7 @@ from flask import (
     send_file, 
     send_from_directory
 )
+from flask_session import Session
 import requests
 import pandas as pd
 from docxtpl import DocxTemplate
@@ -287,6 +288,22 @@ app = Flask(__name__,
 app.secret_key = 'your-fixed-development-secret-key'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB
+
+# Configure server-side sessions to avoid oversized cookies
+SESSION_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'flask_session')
+try:
+    os.makedirs(SESSION_STORAGE_DIR, exist_ok=True)
+except Exception:
+    pass
+
+app.config.update(
+    SESSION_TYPE='filesystem',
+    SESSION_FILE_DIR=SESSION_STORAGE_DIR,
+    SESSION_PERMANENT=False,
+    SESSION_USE_SIGNER=True,
+)
+
+Session(app)
 
 # PDF upload DB setup
 PDF_DB_PATH = 'pdf_inventory.db'
