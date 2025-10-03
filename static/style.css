@@ -1,5 +1,5 @@
 /* Enhanced Progress Modal Styles */
-.app-lava-bg body {
+body.app-lava-bg {
     background-image: url('/static/images/trippy-lava.jpg');
     background-size: cover;
     background-attachment: fixed;
