@@ -298,6 +298,30 @@ function ensureProgressModalReady() {
     if (!progressPercentEl) progressPercentEl = document.getElementById('progressPercent');
     if (!statusChecklistEl) statusChecklistEl = document.getElementById('statusChecklist');
 }
+// Hard-force display of modal if Bootstrap instance fails
+function forceShowModal() {
+    const modalEl = document.getElementById('progressModal');
+    if (!modalEl) return;
+    modalEl.classList.add('show');
+    modalEl.style.display = 'block';
+    modalEl.removeAttribute('aria-hidden');
+    modalEl.setAttribute('aria-modal', 'true');
+    // add backdrop
+    if (!document.querySelector('.modal-backdrop')) {
+        const bd = document.createElement('div');
+        bd.className = 'modal-backdrop fade show';
+        document.body.appendChild(bd);
+    }
+}
+function forceHideModal() {
+    const modalEl = document.getElementById('progressModal');
+    if (!modalEl) return;
+    modalEl.classList.remove('show');
+    modalEl.style.display = 'none';
+    modalEl.setAttribute('aria-hidden', 'true');
+    const bd = document.querySelector('.modal-backdrop');
+    if (bd) bd.remove();
+}
     
 function selectAll() {
     document.querySelectorAll('.product-checkbox').forEach(checkbox => {
@@ -372,8 +396,8 @@ function generateSlips() {
     }
 
     if (progressModal) {
-        progressModal.show();
-    }
+        try { progressModal.show(); } catch(e) { forceShowModal(); }
+    } else { forceShowModal(); }
     updateProgress(2, 'Collecting products', 1);
     const cancelBtn = document.getElementById('cancelGenerationBtn');
     if (cancelBtn) {
@@ -401,9 +425,8 @@ function generateSlips() {
         // Check for timeout/session expired
         if (response.status === 440) {
             return response.json().then(function(data) {
-                if (progressModal) {
-                    progressModal.hide();
-                }
+                if (progressModal) { try { progressModal.hide(); } catch(e){} }
+                forceHideModal();
                 // Show timeout message and redirect
                 const message = data.message || 'Your session has expired. Please refresh the page and reupload your data.';
                 alert(message);
@@ -452,9 +475,8 @@ function generateSlips() {
         }, 1000);
     })
     .catch(function(error) {
-        if (progressModal) {
-            progressModal.hide();
-        }
+        if (progressModal) { try { progressModal.hide(); } catch(e){} }
+        forceHideModal();
         if (error.message !== 'Session timeout') {
             alert('Error generating slips: ' + error.message);
         }
@@ -536,15 +558,13 @@ function generateRobustSlips() {
         a.click();
         window.URL.revokeObjectURL(url);
         setTimeout(function() {
-            if (progressModal) {
-                progressModal.hide();
-            }
+            if (progressModal) { try { progressModal.hide(); } catch(e){} }
+            forceHideModal();
         }, 1000);
     })
     .catch(function(error) {
-        if (progressModal) {
-            progressModal.hide();
-        }
+        if (progressModal) { try { progressModal.hide(); } catch(e){} }
+        forceHideModal();
         if (error.message !== 'Session timeout') {
             alert('Error generating Order Sheet: ' + error.message);
         }
