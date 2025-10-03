@@ -231,6 +231,10 @@ document.addEventListener('DOMContentLoaded', function() {
     try {
         const modalEl = document.getElementById('progressModal');
         if (modalEl) {
+            // Ensure modal is a direct child of <body> to avoid stacking context issues
+            if (modalEl.parentElement !== document.body) {
+                document.body.appendChild(modalEl);
+            }
             progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
         }
     } catch (e) { /* ignore */ }
@@ -398,6 +402,22 @@ function generateSlips() {
     if (progressModal) {
         try { progressModal.show(); } catch(e) { forceShowModal(); }
     } else { forceShowModal(); }
+    // Guard: if still not visible in 100ms, force show
+    setTimeout(() => {
+        const modalEl = document.getElementById('progressModal');
+        if (modalEl && modalEl.style.display !== 'block') {
+            forceShowModal();
+        }
+    }, 100);
+    if (progressModal) {
+        try { progressModal.show(); } catch(e) { forceShowModal(); }
+    } else { forceShowModal(); }
+    setTimeout(() => {
+        const modalEl = document.getElementById('progressModal');
+        if (modalEl && modalEl.style.display !== 'block') {
+            forceShowModal();
+        }
+    }, 100);
     updateProgress(2, 'Collecting products', 1);
     const cancelBtn = document.getElementById('cancelGenerationBtn');
     if (cancelBtn) {
