@@ -11,6 +11,37 @@ body.app-lava-bg {
     background-attachment: fixed, fixed, fixed, fixed, fixed;
     background-position: center center, center center, center center, center center, center center;
     background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+    animation: lavaShift 32s ease-in-out infinite alternate;
+}
+
+@keyframes lavaShift {
+    0% {
+        background-position:
+            center center,
+            15% 8%,
+            85% 18%,
+            50% 95%,
+            center center;
+        filter: hue-rotate(0deg) saturate(1.05);
+    }
+    50% {
+        background-position:
+            center center,
+            25% 18%,
+            75% 10%,
+            45% 85%,
+            center center;
+        filter: hue-rotate(20deg) saturate(1.15);
+    }
+    100% {
+        background-position:
+            center center,
+            30% 22%,
+            70% 12%,
+            40% 80%,
+            center center;
+        filter: hue-rotate(35deg) saturate(1.2);
+    }
 }
 .modal-content.bg-dark {
     background: #232336 !important;
