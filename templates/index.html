@@ -57,6 +57,23 @@
             <button type="submit" class="btn btn-primary mt-2">Import Data</button>
           </form>
           
+          <!-- URL Testing -->
+          <div class="card mt-3">
+            <div class="card-header">
+              <h6><i class="fas fa-link"></i> URL Testing</h6>
+            </div>
+            <div class="card-body">
+              <p class="small text-muted">Test if a URL is accessible and returns JSON data:</p>
+              <div class="input-group mb-2">
+                <input type="url" class="form-control" id="test-url-input" placeholder="Enter URL to test...">
+                <button type="button" class="btn btn-outline-info btn-sm" onclick="testUrl()">
+                  <i class="fas fa-search"></i> Test URL
+                </button>
+              </div>
+              <div id="url-test-result" class="mt-2"></div>
+            </div>
+          </div>
+          
           <!-- Chrome Compatibility Test -->
           <div class="card mt-3">
             <div class="card-header">
@@ -253,6 +270,54 @@ function openIncognito() {
     } catch (error) {
         alert('Error opening incognito window: ' + error.message);
     }
+}
+
+function testUrl() {
+    const url = document.getElementById('test-url-input').value.trim();
+    const resultDiv = document.getElementById('url-test-result');
+    
+    if (!url) {
+        resultDiv.innerHTML = '<div class="alert alert-warning">Please enter a URL to test</div>';
+        return;
+    }
+    
+    resultDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Testing URL...';
+    
+    const formData = new FormData();
+    formData.append('url', url);
+    
+    fetch('{{ url_for("test_url") }}', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            let result = '<div class="alert alert-success">';
+            result += '<h6>URL Test Results:</h6>';
+            result += `<p><strong>Status Code:</strong> ${data.status_code}</p>`;
+            result += `<p><strong>Content Type:</strong> ${data.content_type}</p>`;
+            result += `<p><strong>Content Length:</strong> ${data.content_length} characters</p>`;
+            result += `<p><strong>Is JSON:</strong> ${data.is_json ? '✅ Yes' : '❌ No'}</p>`;
+            result += `<p><strong>Is HTML:</strong> ${data.is_html ? '⚠️ Yes (Error Page)' : '❌ No'}</p>`;
+            result += `<p><strong>Message:</strong> ${data.message}</p>`;
+            if (data.preview) {
+                result += `<p><strong>Preview:</strong> <code>${data.preview}</code></p>`;
+            }
+            result += '</div>';
+            resultDiv.innerHTML = result;
+        } else {
+            let result = '<div class="alert alert-danger">';
+            result += '<h6>URL Test Failed:</h6>';
+            result += `<p><strong>Error:</strong> ${data.message}</p>`;
+            result += `<p><strong>Type:</strong> ${data.error_type || 'Unknown'}</p>`;
+            result += '</div>';
+            resultDiv.innerHTML = result;
+        }
+    })
+    .catch(error => {
+        resultDiv.innerHTML = `<div class="alert alert-danger">Error testing URL: ${error.message}</div>`;
+    });
 }
 </script>
 {% endblock %}

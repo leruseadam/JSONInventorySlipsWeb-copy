@@ -1464,6 +1464,11 @@ def load_from_url(url):
             content_type = response.headers.get('Content-Type', '').lower()
             raw_text = response.text
             print(f"Raw response (first 500 chars): {raw_text[:500]}")
+            
+            # Check if response is HTML (error page)
+            if raw_text.strip().startswith('<') or 'text/html' in content_type:
+                raise ValueError(f"The URL returned HTML content instead of JSON. This usually means the URL is incorrect, the server is down, or you need authentication. URL: {url}")
+            
             # Decide how to parse based on first non-whitespace character
             first_char = raw_text.lstrip()[0] if raw_text.lstrip() else ''
             if 'application/json' in content_type or url.lower().endswith('.json'):
@@ -1506,7 +1511,7 @@ def load_from_url(url):
                         raise ValueError(f"Unsupported data format or failed to parse: {e}")
                         
     except requests.exceptions.ConnectionError as e:
-        error_msg = "Connection refused: Unable to connect to the server. The URL may be incorrect or the server may be down."
+        error_msg = f"Connection failed: Unable to connect to {url}. The server may be down or the URL may be incorrect. Please verify the URL and try again."
         logger.error(f"Connection error for URL {url}: {str(e)}")
         raise ValueError(error_msg)
     except requests.exceptions.Timeout as e:
@@ -2243,7 +2248,66 @@ def test_chunked_data():
         logger.error(f"Test failed: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/debug-session')
+@app.route('/test-url', methods=['POST'])
+def test_url():
+    """Test URL accessibility and content type"""
+    try:
+        url = request.form.get('url')
+        if not url:
+            return jsonify({'success': False, 'message': 'No URL provided'}), 400
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+        
+        response = requests.get(url, timeout=10, headers=headers, allow_redirects=True)
+        
+        result = {
+            'success': True,
+            'status_code': response.status_code,
+            'content_type': response.headers.get('Content-Type', 'Not set'),
+            'content_length': len(response.text),
+            'is_json': False,
+            'is_html': False,
+            'preview': response.text[:200] if response.text else ''
+        }
+        
+        # Check content type
+        if response.text.strip().startswith('<'):
+            result['is_html'] = True
+            result['message'] = 'URL returns HTML content (likely an error page)'
+        elif response.text.strip().startswith('{') or response.text.strip().startswith('['):
+            result['is_json'] = True
+            result['message'] = 'URL returns valid JSON content'
+        else:
+            result['message'] = 'URL returns unknown content type'
+        
+        return jsonify(result)
+        
+    except requests.exceptions.ConnectionError as e:
+        return jsonify({
+            'success': False,
+            'message': f'Connection failed: Cannot reach {url}. Server may be down or URL incorrect.',
+            'error_type': 'connection'
+        }), 400
+    except requests.exceptions.Timeout as e:
+        return jsonify({
+            'success': False,
+            'message': 'Request timed out. Server took too long to respond.',
+            'error_type': 'timeout'
+        }), 400
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Error testing URL: {str(e)}',
+            'error_type': 'unknown'
+        }), 500
 
 def debug_session():
     """Debug session issues for Chrome compatibility"""
