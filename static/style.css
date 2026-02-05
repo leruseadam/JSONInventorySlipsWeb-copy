@@ -2,7 +2,8 @@
 body.app-lava-bg {
     /* If the image is missing, the gradient will still show */
     background-image:
-        url('/static/images/trippy-lava.jpg'),
+        /* Use `logo.png` as a safe fallback to avoid 404 when the decorative image is missing */
+        url('/static/images/logo.png'),
         radial-gradient(1200px 800px at 20% 10%, #4e5bff 0%, rgba(78,91,255,0.2) 35%, transparent 60%),
         radial-gradient(900px 700px at 80% 20%, #ff4ed6 0%, rgba(255,78,214,0.18) 40%, transparent 65%),
         radial-gradient(1000px 900px at 50% 90%, #ffb84e 0%, rgba(255,184,78,0.18) 45%, transparent 70%),
