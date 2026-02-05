@@ -63,6 +63,20 @@
 
   <hr>
 
+  <!-- View Mode Toggle -->
+  <div class="row mb-3">
+    <div class="col-12">
+      <div class="btn-group" role="group" aria-label="View mode">
+        <a href="{{ url_for('data_view') }}" class="btn btn-outline-primary active">
+          <i class="fas fa-table"></i> Standard View
+        </a>
+        <a href="{{ url_for('fifo_view') }}" class="btn btn-outline-success">
+          <i class="fas fa-exchange-alt"></i> FIFO Comparison
+        </a>
+      </div>
+    </div>
+  </div>
+
   <!-- Generate Buttons -->
   <div class="row mb-4" id="generate-slips-section">
     <div class="col-12">
@@ -145,7 +159,7 @@
                                                                                 <td>{{ product.sku | safe }}</td>
                                                                                 <td>{{ product.quantity | safe }}</td>
                                                                                 <td>
-                                                                                    <span class="badge {% if product.source == 'Bamboo' %}bg-success{% else %}bg-primary{% endif %}">
+                                                                                    <span class="badge {% if product.source == 'Excel Upload' %}bg-success{% elif product.source == 'Bamboo' %}bg-info{% elif product.source == 'Cultivera' %}bg-warning{% elif product.source == 'GrowFlow' %}bg-primary{% else %}bg-secondary{% endif %}">
                                                                                         {{ product.source | safe }}
                                                                                     </span>
                                                                                 </td>
@@ -216,7 +230,31 @@
             .status-item.active {opacity:1 !important;}
             .status-item.done i {color:#30d977 !important;}
             .status-item.done i:before {content:"\f00c";font-family:"Font Awesome 5 Free";font-weight:900;}
+            /* Force the progress modal to remain centered in the viewport
+               regardless of page scroll or stacking context. This overrides
+               Bootstrap's dialog placement when necessary and ensures the
+               splash is always visible. */
+            #progressModal .modal-dialog {
+                position: fixed !important;
+                top: 50% !important;
+                left: 50% !important;
+                transform: translate(-50%, -50%) !important;
+                margin: 0 !important;
+                max-width: 560px;
+                z-index: 2060; /* above default backdrop/modal values */
+            }
+            /* Ensure the backdrop sits just below the dialog */
+            .modal-backdrop.show { z-index: 2050 !important; }
+            /* Make the fallback overlay higher than backdrop but below dialog if needed */
+            #generationOverlay { z-index:2040; }
         </style>
+        <!-- Minimal overlay fallback (always available) -->
+        <div id="generationOverlay" style="display:none; position:fixed; inset:0; z-index:1060; background:rgba(10,12,24,.72); backdrop-filter:blur(8px) saturate(120%); -webkit-backdrop-filter:blur(8px) saturate(120%);">
+            <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; color:#e6f3ff;">
+                <div class="spinner-border text-info" role="status" style="width:3rem;height:3rem;"></div>
+                <div class="mt-3 small">Generating… please wait</div>
+            </div>
+        </div>
 {% endblock %}
 
 {% block extra_js %}
