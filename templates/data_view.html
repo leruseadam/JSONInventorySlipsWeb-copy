@@ -267,11 +267,18 @@ document.addEventListener('DOMContentLoaded', function() {
     try {
         const modalEl = document.getElementById('progressModal');
         if (modalEl) {
+            console.debug('progressModal element found, parent:', modalEl.parentElement && modalEl.parentElement.tagName);
             // Ensure modal is a direct child of <body> to avoid stacking context issues
             if (modalEl.parentElement !== document.body) {
+                console.debug('Appending progressModal to document.body to avoid stacking context issues');
                 document.body.appendChild(modalEl);
             }
-            progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            try {
+                progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+                console.debug('Bootstrap modal instance created', progressModal);
+            } catch (err) {
+                console.warn('Bootstrap modal initialization failed:', err);
+            }
         }
     } catch (e) { /* ignore */ }
     mainProgressBarEl = document.getElementById('mainProgressBar');
@@ -331,6 +338,7 @@ function ensureProgressModalReady() {
         const modalEl = document.getElementById('progressModal');
         if (modalEl) {
             progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            console.debug('ensureProgressModalReady: created modal instance');
         }
     }
     if (!mainProgressBarEl) mainProgressBarEl = document.getElementById('mainProgressBar');
@@ -342,6 +350,7 @@ function ensureProgressModalReady() {
 function forceShowModal() {
     const modalEl = document.getElementById('progressModal');
     if (!modalEl) return;
+    console.debug('forceShowModal: forcing display of modal element');
     modalEl.classList.add('show');
     modalEl.style.display = 'block';
     modalEl.removeAttribute('aria-hidden');
@@ -356,6 +365,7 @@ function forceShowModal() {
 function forceHideModal() {
     const modalEl = document.getElementById('progressModal');
     if (!modalEl) return;
+    console.debug('forceHideModal: hiding modal element');
     modalEl.classList.remove('show');
     modalEl.style.display = 'none';
     modalEl.setAttribute('aria-hidden', 'true');
@@ -427,6 +437,7 @@ function updateProgress(percent, text, phaseIndex=1) {
 
 function generateSlips() {
     ensureProgressModalReady();
+    console.debug('generateSlips: starting - progressModal?', !!progressModal);
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
 
@@ -436,7 +447,7 @@ function generateSlips() {
     }
 
     if (progressModal) {
-        try { progressModal.show(); } catch(e) { forceShowModal(); }
+        try { console.debug('Calling progressModal.show()'); progressModal.show(); console.debug('progressModal.show() called'); } catch(e) { console.warn('progressModal.show() failed:', e); forceShowModal(); }
     } else { forceShowModal(); }
     // Guard: if still not visible in 100ms, force show
     setTimeout(() => {
@@ -477,6 +488,7 @@ function generateSlips() {
         body: formData
     })
     .then(function(response) {
+        console.debug('generateSlips: fetch returned, status=', response.status);
         updateProgress(45, 'Processing data', 2);
         // Check for timeout/session expired
         if (response.status === 440) {
@@ -533,6 +545,7 @@ function generateSlips() {
     .catch(function(error) {
         if (progressModal) { try { progressModal.hide(); } catch(e){} }
         forceHideModal();
+        console.error('generateSlips: caught error', error);
         if (error.message !== 'Session timeout') {
             alert('Error generating slips: ' + error.message);
         }
