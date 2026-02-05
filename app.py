@@ -200,14 +200,15 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 # Explicitly set Tesseract binary path and log diagnostics
-import pytesseract
-import subprocess
-pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
-try:
-    version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
-    logger.info(f"Tesseract version: {version.strip()}")
-except Exception as e:
-    logger.error(f"Could not get Tesseract version: {e}")
+# Commented out for now - only needed for PDF OCR feature
+# import pytesseract
+# import subprocess
+# pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
+# try:
+#     version = subprocess.check_output([pytesseract.pytesseract.tesseract_cmd, "--version"], text=True)
+#     logger.info(f"Tesseract version: {version.strip()}")
+# except Exception as e:
+#     logger.error(f"Could not get Tesseract version: {e}")
 
 # Constants
 CONFIG_FILE = os.path.expanduser("~/inventory_generator_config.ini")
@@ -1382,6 +1383,123 @@ def upload_csv():
         flash('Invalid file type')
         return redirect(url_for('index'))
 
+# Excel Upload Route (labelMaker-style fields)
+@app.route('/upload-excel', methods=['POST'])
+def upload_excel():
+    """Upload and process Excel files with labelMaker-style field mapping, filtering by vendor from JSON data"""
+    if 'excel_file' not in request.files:
+        flash('No file selected', 'error')
+        return redirect(url_for('index'))
+    
+    file = request.files['excel_file']
+    if file.filename == '':
+        flash('No file selected', 'error')
+        return redirect(url_for('index'))
+    
+    # Check file extension
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        flash('Invalid file type. Please upload an Excel file (.xlsx or .xls)', 'error')
+        return redirect(url_for('index'))
+    
+    try:
+        # Import the Excel processor
+        from src.utils.excel_field_processor import (
+            process_excel_file, 
+            convert_to_inventory_format,
+            validate_excel_data
+        )
+        
+        # Save file temporarily
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        logger.info(f"Processing Excel file: {filename}")
+        
+        # Process Excel file with labelMaker field mapping
+        df = process_excel_file(filepath)
+        
+        # Validate data
+        is_valid, error_msg = validate_excel_data(df)
+        if not is_valid:
+            flash(f'Excel validation failed: {error_msg}', 'error')
+            return redirect(url_for('index'))
+        
+        # Convert to inventory format
+        inventory_df = convert_to_inventory_format(df)
+        
+        # Check if there's existing JSON data with a vendor
+        json_vendor = None
+        df_json = get_chunked_data('df_json')
+        if df_json:
+            try:
+                if isinstance(df_json, list):
+                    json_df = pd.DataFrame(df_json)
+                else:
+                    json_df = pd.read_json(df_json, orient='records')
+                
+                if not json_df.empty and 'Vendor' in json_df.columns:
+                    json_vendor = json_df['Vendor'].iloc[0] if len(json_df) > 0 else None
+                    if json_vendor:
+                        # Extract vendor name from "license - name" format
+                        if " - " in str(json_vendor):
+                            json_vendor = str(json_vendor).split(" - ")[1].strip()
+                        logger.info(f"Found JSON vendor: {json_vendor}")
+            except Exception as e:
+                logger.warning(f"Could not extract vendor from existing JSON data: {e}")
+        
+        # Filter Excel data by vendor if JSON vendor exists
+        if json_vendor and 'vendor' in inventory_df.columns:
+            original_count = len(inventory_df)
+            # Match vendor name (case-insensitive)
+            inventory_df = inventory_df[
+                inventory_df['vendor'].str.lower().str.contains(json_vendor.lower(), na=False)
+            ]
+            filtered_count = len(inventory_df)
+            
+            if filtered_count == 0:
+                flash(f'No products found matching vendor "{json_vendor}" in Excel file. Showing all {original_count} products.', 'warning')
+                # Reset to original data if no matches
+                inventory_df = convert_to_inventory_format(df)
+            else:
+                logger.info(f"Filtered Excel data: {filtered_count} of {original_count} products match vendor '{json_vendor}'")
+                flash(f'Filtered to {filtered_count} products matching vendor "{json_vendor}"', 'success')
+        else:
+            logger.info(f"No vendor filter applied - processed all {len(inventory_df)} products from Excel")
+        
+        # Store data using chunked storage
+        if not store_chunked_data('excel_df', inventory_df):
+            flash('Failed to store Excel data. The dataset may be too large.', 'error')
+            return redirect(url_for('index'))
+        
+        # Store original Excel data (if small enough)
+        raw_json = df.to_json(orient='records', default_handler=str)
+        if len(raw_json) < 10000:
+            store_chunked_data('excel_raw', raw_json)
+        else:
+            store_chunked_data('excel_raw', {
+                "type": "excel_upload", 
+                "rows": len(df), 
+                "columns": list(df.columns)
+            })
+        
+        session['has_excel_data'] = True
+        
+        flash(f'Successfully loaded {len(inventory_df)} products from Excel file!', 'success')
+        return redirect(url_for('data_view'))
+        
+    except Exception as e:
+        logger.error(f'Failed to process Excel file: {str(e)}', exc_info=True)
+        flash(f'Failed to process Excel file: {str(e)}', 'error')
+        return redirect(url_for('index'))
+    finally:
+        # Clean up temporary file
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except:
+                pass
+
 # Then, update the URL loading function
 @app.route('/load-url', methods=['POST'])
 def load_url():
@@ -1571,7 +1689,8 @@ def load_from_url(url):
     
 
 
-# Update data view to handle chunked data properly
+# FIFO feature removed - endpoint and view intentionally disabled
+
 @app.route('/data-view')
 def data_view():
     try:
@@ -1626,6 +1745,43 @@ def data_view():
         
         logger.info(f"Final transfer info: {transfer_info}")
         
+        # Check if there's Excel data to merge
+        excel_df_json = get_chunked_data('excel_df')
+        excel_products = []
+        
+        if excel_df_json and session.get('has_excel_data'):
+            try:
+                if isinstance(excel_df_json, list):
+                    excel_df = pd.DataFrame(excel_df_json)
+                else:
+                    excel_df = pd.read_json(excel_df_json, orient='records')
+                
+                logger.info(f"Found Excel data with {len(excel_df)} products")
+                
+                # Convert Excel data to product format
+                for idx, row in excel_df.iterrows():
+                    product = {
+                        'id': len(df) + idx,  # Offset ID to avoid conflicts
+                        'name': str(row.get('product_name', '')),
+                        'strain': str(row.get('strain_name', '')),
+                        'sku': str(row.get('sku', '') or row.get('barcode', '')),
+                        'quantity': str(row.get('quantity', '0')),
+                        'source': 'Excel Upload',
+                        'vendor': str(row.get('vendor', 'Unknown')),
+                        'manifest_id': str(row.get('sku', 'N/A')),
+                        'accepted_date': str(row.get('accepted_date', 'N/A')),
+                        'type': str(row.get('product_type', 'Unknown')),
+                        'cost': float(row.get('price', 0)) if 'price' in row else 0,
+                        'brand': str(row.get('brand', '')),
+                        'weight': str(row.get('weight', '')),
+                        'weight_unit': str(row.get('weight_unit', ''))
+                    }
+                    excel_products.append(product)
+                
+                logger.info(f"Added {len(excel_products)} products from Excel")
+            except Exception as e:
+                logger.error(f"Error processing Excel data for display: {e}")
+        
         # Format data for template
         products = []
         for idx, row in df.iterrows():
@@ -1643,6 +1799,9 @@ def data_view():
                 'cost': float(row.get('Cost', 0)) if 'Cost' in row else 0
             }
             products.append(product)
+        
+        # Merge Excel products with JSON products
+        products.extend(excel_products)
 
         # Smart grouping by similar product terms, then alphabetical
         def create_smart_groups(products):
