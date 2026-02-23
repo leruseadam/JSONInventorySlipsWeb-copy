@@ -6,6 +6,8 @@ from docx.shared import Pt
 from docxcompose.composer import Composer
 from io import BytesIO
 from docxtpl import DocxTemplate
+import datetime
+from collections import deque
 
 def chunk_records(records, chunk_size=4):
     """Split records into chunks of specified size"""
@@ -100,70 +102,127 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         
         records = selected_df.to_dict(orient="records")
         pages = []
-        
+
+        # Create queues per logical slot so each slot holds one product type
+        def map_type_to_slot(ptype):
+            if not ptype:
+                return None
+            p = str(ptype).lower()
+            if 'edibl' in p or 'edible' in p:
+                return 1
+            if 'bever' in p or 'drink' in p:
+                return 2
+            if 'flower' in p or 'bud' in p or 'floral' in p:
+                return 3
+            if 'concentrate' in p or 'wax' in p or 'shatter' in p or 'oil' in p:
+                return 4
+            return None
+
+        # Build queues for slots 1..items_per_page
+        slot_queues = {i: deque() for i in range(1, items_per_page + 1)}
+        misc_queue = deque()
+
+        for rec in records:
+            ptype = rec.get('Product Type*', rec.get('Inventory Type', ''))
+            slot = map_type_to_slot(ptype)
+            if slot and slot in slot_queues:
+                slot_queues[slot].append(rec)
+            else:
+                misc_queue.append(rec)
+
+        # Append misc records into any empty slot queues in round-robin fashion
+        # This ensures records that don't match known types still get placed.
+        misc_idx = 1
+        while misc_queue:
+            placed = False
+            for i in range(1, items_per_page + 1):
+                if misc_idx > len(misc_queue):
+                    misc_idx = 1
+                if len(slot_queues[i]) == 0:
+                    slot_queues[i].append(misc_queue.popleft())
+                    placed = True
+                    break
+            if not placed:
+                # All slots have at least one item; break so we'll distribute in paging step
+                break
+
+        # Determine how many pages required by the largest queue
+        max_queue_len = max((len(q) for q in slot_queues.values()), default=0)
+        # If misc_queue still has items, they'll create additional pages
+        if misc_queue:
+            # total pages is max of existing queues plus ceil(misc/slots)
+            import math
+            extra_pages = math.ceil(len(misc_queue) / items_per_page)
+            total_pages = max_queue_len + extra_pages
+        else:
+            total_pages = max_queue_len
+
+        if total_pages == 0 and records:
+            total_pages = 1
+
         # Progress calculation
-        total_chunks = (len(records) + items_per_page - 1) // items_per_page
         current_chunk = 0
-        
-        for chunk in chunk_records(records, items_per_page):
+
+        # Build pages by pulling one item per slot per page (if available)
+        for page_idx in range(total_pages):
             current_chunk += 1
             if progress_callback:
-                progress_value = (current_chunk / total_chunks) * 50  # First half of progress
+                progress_value = (current_chunk / max(total_pages,1)) * 50  # First half of progress
                 progress_callback(int(progress_value))
-            
+
             if status_callback:
-                status_callback(f"Generating page {current_chunk} of {total_chunks}...")
-            
+                status_callback(f"Generating page {current_chunk} of {total_pages}...")
+
             try:
                 tpl = DocxTemplate(template_path)
                 context = {}
-                
-                slot_num = 1
-                for rec in chunk:
-                    product_name = rec.get("Product Name*", "")
-                    barcode = rec.get("Barcode*", "")
-                    qty = rec.get("Quantity Received*", rec.get("Quantity*", ""))
-                    
-                    if not product_name and not barcode and not qty:
-                        continue
-                    
-                    try:
-                        qty = int(float(qty))
-                    except (ValueError, TypeError):
-                        qty = ""
-                    
-                    context[f"Label{slot_num}"] = {
-                        "ProductName": product_name,
-                        "Barcode": barcode,
-                        "AcceptedDate": rec.get("Accepted Date", ""),
-                        "QuantityReceived": qty,
-                        "Vendor": rec.get("Vendor", ""),
-                        "StrainName": rec.get("Strain Name", ""),
-                        "ProductType": rec.get("Product Type*", rec.get("Inventory Type", "")),
-                        "THCContent": rec.get("THC Content", ""),
-                        "CBDContent": rec.get("CBD Content", "")
-                    }
-                    slot_num += 1
-                
-                # Fill empty slots
-                for i in range(slot_num, items_per_page + 1):
-                    context[f"Label{i}"] = {
-                        "ProductName": "",
-                        "Barcode": "",
-                        "AcceptedDate": "",
-                        "QuantityReceived": "",
-                        "Vendor": "",
-                        "StrainName": "",
-                        "ProductType": "",
-                        "THCContent": "",
-                        "CBDContent": ""
-                    }
-                
+
+                # For each slot index, pop next record if available
+                for slot_num in range(1, items_per_page + 1):
+                    rec = None
+                    if slot_queues.get(slot_num) and len(slot_queues[slot_num]) > 0:
+                        rec = slot_queues[slot_num].popleft()
+                    elif misc_queue:
+                        rec = misc_queue.popleft()
+
+                    if rec:
+                        product_name = rec.get("Product Name*", "")
+                        barcode = rec.get("Barcode*", "")
+                        qty = rec.get("Quantity Received*", rec.get("Quantity*", ""))
+                        try:
+                            qty = int(float(qty))
+                        except (ValueError, TypeError):
+                            qty = ""
+
+                        context[f"Label{slot_num}"] = {
+                            "ProductName": product_name,
+                            "Barcode": barcode,
+                            "AcceptedDate": rec.get("Accepted Date", ""),
+                            "QuantityReceived": qty,
+                            "Vendor": rec.get("Vendor", ""),
+                            "StrainName": rec.get("Strain Name", ""),
+                            "ProductType": rec.get("Product Type*", rec.get("Inventory Type", "")),
+                            "THCContent": rec.get("THC Content", ""),
+                            "CBDContent": rec.get("CBD Content", "")
+                        }
+                    else:
+                        context[f"Label{slot_num}"] = {
+                            "ProductName": "",
+                            "Barcode": "",
+                            "AcceptedDate": "",
+                            "QuantityReceived": "",
+                            "Vendor": "",
+                            "StrainName": "",
+                            "ProductType": "",
+                            "THCContent": "",
+                            "CBDContent": ""
+                        }
+
                 tpl.render(context)
                 buf = BytesIO()
                 tpl.save(buf)
                 pages.append(Document(buf))
-                
+
             except Exception as e:
                 return False, f"Error generating page {current_chunk}: {e}"
         
