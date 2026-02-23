@@ -10,6 +10,8 @@ from docx.enum.section import WD_SECTION
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import os
+from collections import deque
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -108,33 +110,83 @@ class SimpleDocumentGenerator:
                 return False, "No records provided"
                 
             # Calculate total pages
-            total_pages = (len(records) + 3) // 4  # Ceiling division by 4
+            items_per_page = 4
+            # Map product type strings to slot numbers
+            def map_type_to_slot(ptype):
+                if not ptype:
+                    return None
+                p = str(ptype).lower()
+                if 'edibl' in p or 'edible' in p:
+                    return 1
+                if 'bever' in p or 'drink' in p:
+                    return 2
+                if 'flower' in p or 'bud' in p or 'floral' in p:
+                    return 3
+                if 'concentrate' in p or 'wax' in p or 'shatter' in p or 'oil' in p:
+                    return 4
+                return None
+
+            # Build queues per slot
+            slot_queues = {i: deque() for i in range(1, items_per_page + 1)}
+            misc_queue = deque()
+            for rec in records:
+                ptype = rec.get('Product Type*', rec.get('Inventory Type', ''))
+                slot = map_type_to_slot(ptype)
+                if slot and slot in slot_queues:
+                    slot_queues[slot].append(rec)
+                else:
+                    misc_queue.append(rec)
+
+            # Distribute misc records into empty slot queues when possible
+            while misc_queue:
+                placed = False
+                for i in range(1, items_per_page + 1):
+                    if len(slot_queues[i]) == 0:
+                        slot_queues[i].append(misc_queue.popleft())
+                        placed = True
+                        break
+                if not placed:
+                    break
+
+            max_queue_len = max((len(q) for q in slot_queues.values()), default=0)
+            if misc_queue:
+                extra_pages = math.ceil(len(misc_queue) / items_per_page)
+                total_pages = max_queue_len + extra_pages
+            else:
+                total_pages = max_queue_len
+
+            if total_pages == 0 and records:
+                total_pages = 1
+
             current_page = 1
-            
-            # Process records in groups of 4
-            for i in range(0, len(records), 4):
-                # Create 2x2 table for this page
+
+            # For each page, place one item per slot if available
+            for page_idx in range(total_pages):
                 table = self._create_table(rows=2, cols=2)
-                
-                # Get records for this page (up to 4)
-                page_records = records[i:i+4]
-                
-                # Fill table cells
-                cell_index = 0
-                for record in page_records:
-                    row = cell_index // 2
-                    col = cell_index % 2
+                # slot->cell mapping: 1:(0,0),2:(0,1),3:(1,0),4:(1,1)
+                for slot_num in range(1, items_per_page + 1):
+                    rec = None
+                    if slot_queues.get(slot_num) and len(slot_queues[slot_num]) > 0:
+                        rec = slot_queues[slot_num].popleft()
+                    elif misc_queue:
+                        rec = misc_queue.popleft()
+
+                    row = (slot_num - 1) // 2
+                    col = (slot_num - 1) % 2
                     cell = table.cell(row, col)
-                    self._add_label(cell, record)
-                    cell_index += 1
-                
+                    if rec:
+                        self._add_label(cell, rec)
+                    else:
+                        # leave cell empty but keep structure
+                        pass
+
                 # Add page number
                 self._add_page_number(current_page, total_pages)
-                
+
                 # Add page break if not last page
                 if current_page < total_pages:
                     self.doc.add_section(WD_SECTION.NEW_PAGE)
-                    
+
                 current_page += 1
                 
             return True, None
