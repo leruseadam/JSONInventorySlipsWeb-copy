@@ -1882,16 +1882,6 @@ def _posabit_defer_data_view_matching() -> bool:
     )
 
 
-def _incoming_qty_float_dataview(val):
-    try:
-        s = str(val if val is not None else "").strip().replace(",", "")
-        if not s:
-            return None
-        return float(s)
-    except ValueError:
-        return None
-
-
 def _init_empty_pos_fields_on_products(products: list) -> None:
     for p in products:
         p["pos_description"] = ""
@@ -1912,10 +1902,8 @@ def _apply_row_selected_defaults(products: list, pos_cfg: dict, posabit_selected
         if not pos_match_ready:
             p["row_selected_default"] = True
             continue
-        qn = _incoming_qty_float_dataview(p.get("quantity"))
-        low_qty = qn is not None and qn <= 10.0
-        not_in_menu = not p.get("pos_matched")
-        p["row_selected_default"] = not (not_in_menu and low_qty)
+        # Keep every row selected by default, including when POS has no match (slips still use manifest data).
+        p["row_selected_default"] = True
 
 
 def _data_view_pos_vendor_string(row) -> str:
