@@ -9,6 +9,8 @@ from docxtpl import DocxTemplate
 import datetime
 from collections import deque
 
+from src.utils.posabit_menu import normalize_pos_menu_qty_cell
+
 def chunk_records(records, chunk_size=4):
     """Split records into chunks of specified size"""
     for i in range(0, len(records), chunk_size):
@@ -199,6 +201,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                             "Barcode": barcode,
                             "AcceptedDate": rec.get("Accepted Date", ""),
                             "QuantityReceived": qty,
+                            "POS": normalize_pos_menu_qty_cell(rec.get("POS Quantity")),
                             "Vendor": rec.get("Vendor", ""),
                             "StrainName": rec.get("Strain Name", ""),
                             "ProductType": rec.get("Product Type*", rec.get("Inventory Type", "")),
@@ -211,6 +214,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                             "Barcode": "",
                             "AcceptedDate": "",
                             "QuantityReceived": "",
+                            "POS": "",
                             "Vendor": "",
                             "StrainName": "",
                             "ProductType": "",

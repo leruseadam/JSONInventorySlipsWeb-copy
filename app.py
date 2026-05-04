@@ -170,6 +170,7 @@ from src.utils.posabit_menu import (
     build_match_index,
     find_pos_menu_match,
     get_menu_rows_cached,
+    normalize_pos_menu_qty_cell,
     posabit_config_from_env,
 )
 import concurrent.futures
@@ -412,6 +413,13 @@ app.config.update(
 )
 
 Session(app)
+
+
+@app.template_filter("pos_qty_cell")
+def _template_filter_pos_qty_cell(val):
+    """Data View: POS menu quantity — blank when zero/placeholder (DOCX uses same helper)."""
+    return normalize_pos_menu_qty_cell(val)
+
 
 # When .env was empty at server start, saving the file later did nothing until restart.
 # Reload project .env whenever its mtime changes (dev-friendly; cheap stat + rare re-read).
@@ -1972,7 +1980,9 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
             p["pos_description"] = (disp or "") if ok else ""
             p["pos_matched"] = bool(ok)
             p["pos_match_kind"] = kind
-            p["pos_menu_quantity"] = mq if ok else ""
+            p["pos_menu_quantity"] = (
+                normalize_pos_menu_qty_cell(mq) if ok else ""
+            )
             if ok:
                 posabit_match_summary["matched"] += 1
             else:
@@ -1998,6 +2008,44 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
         posabit_match_summary["unmatched"] = len(products)
 
     return posabit_menu_rows, posabit_error, posabit_match_summary
+
+
+def _inject_pos_quantity_for_generation(selected_df):
+    """Add 'POS Quantity' column to selected_df for DOCX merge fields (best-effort)."""
+    try:
+        if selected_df is None or selected_df.empty:
+            return selected_df
+        pos_cfg = posabit_config_from_env()
+        venues = pos_cfg.get("venues") or []
+        if not pos_cfg.get("enabled") or not venues:
+            selected_df["POS Quantity"] = ""
+            return selected_df
+        posabit_selected = (session.get("posabit_venue") or "").strip().lower()
+        if posabit_selected and not any(v["id"] == posabit_selected for v in venues):
+            posabit_selected = ""
+        if not posabit_selected:
+            posabit_selected = venues[0]["id"]
+
+        products = []
+        for i, (_, row) in enumerate(selected_df.iterrows()):
+            products.append(
+                {
+                    "id": i,
+                    "name": str(row.get("Product Name*", "")),
+                    "sku": str(row.get("Barcode*", "")),
+                    "quantity": str(row.get("Quantity Received*", "")),
+                }
+            )
+        _init_empty_pos_fields_on_products(products)
+        _, _, _ = _perform_pos_matching_on_products(products, pos_cfg, posabit_selected)
+        pos_qty = [normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")) for p in products]
+        selected_df = selected_df.copy()
+        selected_df["POS Quantity"] = pos_qty
+        return selected_df
+    except Exception as e:
+        logger.warning("POS quantity enrichment for generation failed: %s", e, exc_info=True)
+        selected_df["POS Quantity"] = ""
+        return selected_df
 
 
 @app.route("/api/data-view/pos-matches", methods=["GET"])
@@ -2058,7 +2106,7 @@ def api_data_view_pos_matches():
             "pos_description": p.get("pos_description") or "",
             "pos_matched": bool(p.get("pos_matched")),
             "pos_match_kind": p.get("pos_match_kind") or "none",
-            "pos_menu_quantity": str(p.get("pos_menu_quantity") or "").strip(),
+            "pos_menu_quantity": normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")),
             "row_selected_default": bool(p.get("row_selected_default", True)),
         }
         for p in products
@@ -2372,6 +2420,7 @@ def generate_slips():
         # Get only selected rows
         selected_df = df.iloc[selected_indices].copy()
         logger.info(f"Selected DataFrame shape: {selected_df.shape}")
+        selected_df = _inject_pos_quantity_for_generation(selected_df)
         
         # Load configuration
         config = load_config()

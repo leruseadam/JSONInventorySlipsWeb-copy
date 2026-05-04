@@ -187,7 +187,7 @@
                   {% for m in _menu_preview %}
                   <tr>
                     <td>{{ m.name | e }}</td>
-                    <td>{{ (m.menu_quantity or '') | e }}</td>
+                    <td>{% set _mq = m.menu_quantity | pos_qty_cell %}{% if _mq %}<span class="text-success fw-semibold">{{ _mq | e }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
                     <td>{{ m.brand | e }}</td>
                     <td>{{ m.strain | e }}</td>
                     <td>{{ m.product_type | e }}</td>
@@ -308,8 +308,9 @@
                                                                                 </td>
                                                                                 {% if posabit_enabled %}
                                                                                 <td class="align-middle text-center pos-menu-qty-cell">
-                                                                                  {% if product.pos_matched and product.pos_menu_quantity %}
-                                                                                  <span class="text-success fw-semibold">{{ product.pos_menu_quantity | e }}</span>
+                                                                                  {% set pos_q = product.pos_menu_quantity | pos_qty_cell %}
+                                                                                  {% if product.pos_matched and pos_q %}
+                                                                                  <span class="text-success fw-semibold">{{ pos_q | e }}</span>
                                                                                   {% else %}
                                                                                   <span class="text-muted">—</span>
                                                                                   {% endif %}
@@ -432,6 +433,25 @@ function escapeHtmlPos(s) {
   return d.innerHTML;
 }
 
+/** Match server normalize_pos_menu_qty_cell: hide meaningless 0 / 0.0 from POS APIs. */
+function posMenuQtyDisplayString(val) {
+  if (val == null || val === false) return '';
+  if (typeof val === 'number' && Number.isFinite(val) && Math.abs(val) <= 1e-15) return '';
+  var s = String(val).trim().replace(/\ufeff/g, '');
+  if (!s) return '';
+  try {
+    s = s.normalize('NFKC');
+  } catch (e) { /* IE / very old engines */ }
+  s = s.replace(/[\u200b\u200c\u200d\ufeff]/g, '');
+  s = s.replace(/,/g, '').trim();
+  if (!s || s === '-' || s === '\u2014') return '';
+  var low = s.toLowerCase();
+  if (low === 'na' || low === 'n/a' || low === 'none' || low === 'null') return '';
+  var n = parseFloat(s);
+  if (!isNaN(n) && Number.isFinite(n) && Math.abs(n) <= 1e-15) return '';
+  return s;
+}
+
 function renderPosBadgeCell(td, matched, matchKind) {
   if (!td) return;
   while (td.firstChild) td.removeChild(td.firstChild);
@@ -495,8 +515,9 @@ function applyDeferredPosMatches(data) {
 
     var qtyTd = tr.querySelector('.pos-menu-qty-cell');
     if (qtyTd) {
-      if (row.pos_matched && row.pos_menu_quantity) {
-        qtyTd.innerHTML = '<span class="text-success fw-semibold">' + escapeHtmlPos(row.pos_menu_quantity) + '</span>';
+      var pq = posMenuQtyDisplayString(row.pos_menu_quantity);
+      if (row.pos_matched && pq) {
+        qtyTd.innerHTML = '<span class="text-success fw-semibold">' + escapeHtmlPos(pq) + '</span>';
       } else {
         qtyTd.innerHTML = '<span class="text-muted">—</span>';
       }

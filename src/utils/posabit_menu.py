@@ -10,12 +10,15 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+_ZWS_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
 
 
 def _request_timeout_sec() -> float:
@@ -280,6 +283,58 @@ def _format_menu_qty(raw: Any) -> str:
     return s
 
 
+def _normalize_qty_comparison_string(val: Any) -> str:
+    """Normalize for parsing: NFKC fold, strip zero‑width chars, remove thousands commas."""
+    if val is None or isinstance(val, bool):
+        return ""
+    s = str(val).strip()
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = _ZWS_RE.sub("", s)
+    return s.replace(",", "").strip()
+
+
+def _is_zero_like_cleaned(s: str) -> bool:
+    """True once ``s`` is already NFKC/normalized ASCII-ish quantity text."""
+    if not s:
+        return True
+    low = s.lower()
+    if low in ("-", "—", "na", "n/a", "none", "null"):
+        return True
+    try:
+        return abs(float(s)) <= 1e-15
+    except ValueError:
+        return False
+
+
+def _is_zero_like_qty_text(val: Any) -> bool:
+    """True for empty, numeric zero, and common placeholder strings (POS APIs often send quantity: 0)."""
+    if val is None or isinstance(val, bool):
+        return True
+    return _is_zero_like_cleaned(_normalize_qty_comparison_string(val))
+
+
+def _coerce_inventory_qty_pick(raw: Any) -> Optional[str]:
+    """Return a display string only when it is a non-zero-ish quantity."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    cand = (_format_menu_qty(raw) or "").strip()
+    if not cand or _is_zero_like_qty_text(cand):
+        return None
+    return cand
+
+
+def normalize_pos_menu_qty_cell(val: Any) -> str:
+    """For Data View / DOCX: hide missing or zero-ish POS qty (shows blank instead of 0 / 0.0)."""
+    if val is None or isinstance(val, bool):
+        return ""
+    s = _normalize_qty_comparison_string(val)
+    if _is_zero_like_cleaned(s):
+        return ""
+    return s
+
+
 def _extract_menu_quantity(d: Dict[str, Any]) -> str:
     """Best-effort qty from menu_item or inventory API objects (field names vary)."""
     if not isinstance(d, dict):
@@ -319,9 +374,9 @@ def _extract_menu_quantity(d: Dict[str, Any]) -> str:
         if k not in d:
             continue
         v = d.get(k)
-        if v is None or (isinstance(v, str) and not v.strip()):
-            continue
-        return _format_menu_qty(v)
+        picked = _coerce_inventory_qty_pick(v)
+        if picked is not None:
+            return picked
     for nested_key in ("inventory", "inventory_info", "stock", "counts", "availability"):
         nested = d.get(nested_key)
         if isinstance(nested, dict):
@@ -342,6 +397,22 @@ def _extract_menu_quantity(d: Dict[str, Any]) -> str:
         if isinstance(v, str) and not v.strip():
             continue
         if any(
+            bad in kl
+            for bad in (
+                "price",
+                "cost",
+                "tax",
+                "fee",
+                "discount",
+                "deposit",
+                "credit",
+                "percent",
+                "thc",
+                "cbd",
+            )
+        ):
+            continue
+        if any(
             fragment in kl
             for fragment in (
                 "quantity",
@@ -356,7 +427,9 @@ def _extract_menu_quantity(d: Dict[str, Any]) -> str:
                 "units",
             )
         ):
-            return _format_menu_qty(v)
+            picked = _coerce_inventory_qty_pick(v)
+            if picked is not None:
+                return picked
     return ""
 
 
@@ -574,7 +647,7 @@ def build_match_index(
     norm_to_display: Dict[str, str] = {}
     norm_to_qty: Dict[str, str] = {}
     for row in rows:
-        mq = str(row.get("menu_quantity") or "").strip()
+        mq = normalize_pos_menu_qty_cell(row.get("menu_quantity"))
         candidates = [row["display"], row["name"]]
         candidates.extend(row.get("variant_names") or [])
         for c in candidates:
@@ -584,8 +657,10 @@ def build_match_index(
             if n not in norm_to_display:
                 norm_to_display[n] = row["display"] or c
                 norm_to_qty[n] = mq
-            elif mq and not str(norm_to_qty.get(n, "")).strip():
-                norm_to_qty[n] = mq
+            elif mq:
+                cur = str(norm_to_qty.get(n, "") or "").strip()
+                if not cur or _is_zero_like_qty_text(cur):
+                    norm_to_qty[n] = mq
     return norm_to_display, norm_to_qty, list(norm_to_display.keys())
 
 
