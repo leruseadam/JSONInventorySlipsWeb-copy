@@ -1861,13 +1861,25 @@ def load_from_url(url):
 
 
 def _posabit_data_view_fetch_timeout_sec() -> float:
-    """Bound how long Data View blocks on POSaBit (menu + inventory) so the browser does not hang."""
+    """Bound how long Data View (or /api/data-view/pos-matches) waits on POSaBit menu + inventory."""
     try:
-        # Default ~40s: menu + optional inventory (POS never blocks first HTML paint — see data_view).
         t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "40")
         return max(15.0, min(t, 600.0))
     except ValueError:
         return 40.0
+
+
+def _posabit_defer_data_view_matching() -> bool:
+    """
+    When false (default), /data-view runs POS match before HTML so the table shows matches immediately.
+    When true, the page renders first and /api/data-view/pos-matches fills POS columns (better on very slow POS).
+    """
+    return (os.environ.get("POSABIT_DATA_VIEW_DEFER_MATCHING") or "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _incoming_qty_float_dataview(val):
@@ -2427,7 +2439,8 @@ def data_view():
 
         products = _assemble_data_view_products(df, format_type)
 
-        # POSaBit: never block this route on menu/inventory HTTP — matches load via /api/data-view/pos-matches.
+        # POSaBit: default is inline match on this route (immediate table). Set POSABIT_DATA_VIEW_DEFER_MATCHING=true
+        # to load menu via /api/data-view/pos-matches after first paint instead.
         pos_cfg = posabit_config_from_env()
         posabit_venues = pos_cfg.get('venues') or []
         arg_venue = (request.args.get('venue') or '').strip().lower()
@@ -2445,11 +2458,20 @@ def data_view():
         posabit_loading = False
 
         if pos_cfg['enabled'] and posabit_selected:
-            posabit_loading = True
-            posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
-            _init_empty_pos_fields_on_products(products)
-            for p in products:
-                p['row_selected_default'] = True
+            if _posabit_defer_data_view_matching():
+                posabit_loading = True
+                posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
+                _init_empty_pos_fields_on_products(products)
+                for p in products:
+                    p['row_selected_default'] = True
+            else:
+                posabit_match_summary['disabled'] = False
+                posabit_menu_rows, posabit_error, posabit_match_summary = _perform_pos_matching_on_products(
+                    products, pos_cfg, posabit_selected
+                )
+                _apply_row_selected_defaults(
+                    products, pos_cfg, posabit_selected, posabit_error, posabit_match_summary
+                )
         else:
             for p in products:
                 p['pos_description'] = ''
