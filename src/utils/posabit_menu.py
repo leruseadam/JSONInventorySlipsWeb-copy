@@ -712,6 +712,87 @@ def _require_brand_vendor_overlap() -> bool:
     return _truthy_env("POSABIT_MATCH_REQUIRE_BRAND", "0")
 
 
+def _include_menu_description_in_matching() -> bool:
+    """When false (default), menu ``description`` is excluded from vendor/brand checks (often lists unrelated SKUs)."""
+    return _truthy_env("POSABIT_MATCH_INCLUDE_MENU_DESCRIPTION", "0")
+
+
+def _require_sender_vendor_in_pos_row() -> bool:
+    """
+    When true (default), the manifest ``Vendor`` tail (after `` - ``) must match words in the POS
+    row's brand/display/name/strain (not description), so lines from other producers are rejected.
+    """
+    return _truthy_env("POSABIT_MATCH_REQUIRE_SENDER_VENDOR", "1")
+
+
+_SENDER_VENDOR_STOP = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "med",
+        "compliant",
+        "llc",
+        "inc",
+        "ltd",
+        "corp",
+        "company",
+        "enterprises",
+        "group",
+        "holdings",
+        "licensed",
+        "license",
+        "processor",
+        "processing",
+        "proc",
+        "retail",
+        "wholesale",
+        "distribution",
+        "marijuana",
+    }
+)
+
+
+def _vendor_tail_keyword_tokens(import_vendor: str) -> List[str]:
+    """4+ letter tokens from the vendor name tail (license number segment is ignored)."""
+    raw = (import_vendor or "").strip()
+    if not raw or raw.lower() in ("unknown", "unknown vendor"):
+        return []
+    tail = raw.split(" - ")[-1].strip() if " - " in raw else raw
+    norm = normalize_product_name(tail)
+    out: List[str] = []
+    seen: Set[str] = set()
+    for w in re.findall(r"[a-z0-9]+", norm.lower()):
+        if len(w) < 4 or w in _SENDER_VENDOR_STOP or w in _TOKEN_STOP:
+            continue
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+        if len(out) >= 5:
+            break
+    return out
+
+
+def _row_satisfies_same_vendor_sender(row: Optional[Dict[str, Any]], import_vendor: str) -> bool:
+    if not _require_sender_vendor_in_pos_row() or row is None:
+        return True
+    blob = _menu_identity_norm_blob(row)
+    if not blob:
+        return False
+    kws = _vendor_tail_keyword_tokens(import_vendor)
+    blob_n = re.sub(r"[^a-z0-9]+", "", blob)
+    core = _vendor_core(import_vendor)
+    if len(core) >= 6 and core in blob_n:
+        return True
+    if not kws:
+        return True
+    matched = sum(
+        1 for w in kws if re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", blob)
+    )
+    need = max(1, (len(kws) + 1) // 2)
+    return matched >= need
+
+
 def _match_trailing_by_brand_enabled() -> bool:
     """
     When true (default), manifest-derived brand tokens must appear on the POS row (same identity
@@ -770,7 +851,11 @@ def _manifest_brand_tokens(import_name: str) -> List[str]:
 
 
 def _menu_identity_norm_blob(row: Dict[str, Any]) -> str:
-    parts = [str(row.get(k) or "") for k in ("brand", "display", "name", "strain", "category", "description")]
+    """Text used for vendor / manifest-brand checks (description off by default — see POSABIT_MATCH_INCLUDE_MENU_DESCRIPTION)."""
+    keys: List[str] = ["brand", "display", "name", "strain", "category"]
+    if _include_menu_description_in_matching():
+        keys.append("description")
+    parts = [str(row.get(k) or "") for k in keys]
     return normalize_product_name(" ".join(parts))
 
 
@@ -877,10 +962,11 @@ def _import_match_buckets(vendor: str, product_type: str, product_name: str) -> 
 
 
 def _menu_row_buckets(row: Dict[str, Any]) -> frozenset:
-    blob = " ".join(
-        str(row.get(k) or "")
-        for k in ("product_type", "category", "brand", "name", "display", "strain", "description")
-    )
+    keys = ("product_type", "category", "brand", "name", "display", "strain")
+    parts = [str(row.get(k) or "") for k in keys]
+    if _include_menu_description_in_matching():
+        parts.append(str(row.get("description") or ""))
+    blob = " ".join(parts)
     return _text_product_buckets(blob)
 
 
@@ -924,6 +1010,8 @@ def _row_compatible_with_import(
         mb = _menu_row_buckets(row)
         if not _buckets_compatible(ib, mb):
             return False
+    if not _row_satisfies_same_vendor_sender(row, import_vendor):
+        return False
     ident = _menu_identity_norm_blob(row)
     if not _vendor_brand_compatible(import_vendor, ident):
         return False
@@ -1062,11 +1150,13 @@ def find_pos_menu_match(
 
     When ``norm_to_row`` is set and ``POSABIT_MATCH_STRICT_CATEGORY`` is on (default), non-exact
     matches only consider menu rows whose product family (flower / vape / edible / …) overlaps
-    the import row (vendor + type + name). With ``POSABIT_MATCH_TRAILING_BY_BRAND`` (default on),
-    manifest brand hints (trailing ``… by BRAND`` and short ``BRAND - …`` prefixes) must appear as
-    words in the POS row identity (brand, display, name, strain, category, description). When
-    ``POSABIT_MATCH_REQUIRE_BRAND`` is on, the import Vendor string is checked against that same
-    identity blob, not the POS brand field alone. Use ``skip_compatibility=True`` for SKU-only lookups.
+    the import row (vendor + type + name). With ``POSABIT_MATCH_REQUIRE_SENDER_VENDOR`` (default on),
+    the vendor tail after `` - `` must match words in the POS row's brand/display/name/strain (not
+    menu ``description``, which is excluded by default). With ``POSABIT_MATCH_TRAILING_BY_BRAND``
+    (default on), manifest brand hints must appear in that same identity text. Set
+    ``POSABIT_MATCH_INCLUDE_MENU_DESCRIPTION=1`` to add description back (legacy). When
+    ``POSABIT_MATCH_REQUIRE_BRAND`` is on, the full import Vendor string is checked against the same
+    blob. Use ``skip_compatibility=True`` for SKU-only lookups.
     """
     try:
         fuzzy_cutoff = float(os.environ.get("POSABIT_FUZZY_CUTOFF") or fuzzy_cutoff)
