@@ -30,7 +30,7 @@ import re
 import webbrowser
 import time
 from functools import wraps
-from io import BytesIO
+from io import BytesIO, StringIO
 import zlib
 from pathlib import Path
 from datetime import datetime
@@ -92,6 +92,105 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+_APP_ROOT = Path(__file__).resolve().parent
+_ENV_FILE_PRIMARY = _APP_ROOT / '.env'
+
+
+def load_env_file(path: Path) -> int:
+    """Read .env into os.environ. Values override existing keys. Returns number of entries applied."""
+    try:
+        if not path.is_file():
+            return 0
+        raw = path.read_text(encoding='utf-8-sig', errors='replace')
+    except OSError:
+        return 0
+    applied = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.lower().startswith('export '):
+            line = line[7:].strip()
+        if '=' not in line:
+            continue
+        key, _, val = line.partition('=')
+        key = key.strip().lstrip('\ufeff')
+        if not key:
+            continue
+        val = val.strip()
+        # Drop trailing `# comment` when value is not quoted
+        if val and not (val[0] in ('"', "'") and len(val) >= 2):
+            if '#' in val:
+                val = val.split('#', 1)[0].rstrip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1]
+        os.environ[key] = val
+        applied += 1
+    return applied
+
+
+def load_env_from_search_paths() -> None:
+    """Load `.env`: optional cwd file first, then the project `.env` next to app.py (wins on conflicts)."""
+    cwd_env = Path.cwd() / '.env'
+    primary = _ENV_FILE_PRIMARY
+    try:
+        from dotenv import load_dotenv
+        if cwd_env.is_file() and cwd_env.resolve() != primary.resolve():
+            load_dotenv(cwd_env, override=True)
+    except ImportError:
+        logger.debug('python-dotenv not installed; reading .env with built-in parser')
+    if cwd_env.is_file() and cwd_env.resolve() != primary.resolve():
+        n_cwd = load_env_file(cwd_env)
+        logger.info('Loaded %d entries from %s', n_cwd, cwd_env)
+    # Project `.env` always applied with our parser (utf-8-sig, same rules as above)
+    n_pri = load_env_file(primary)
+    if primary.is_file():
+        sz = primary.stat().st_size
+        logger.info('Loaded environment file: %s (%d KEY=value entries, %d bytes)', primary, n_pri, sz)
+        if sz == 0:
+            logger.warning(
+                '.env exists but is 0 bytes on disk — save your editor buffer (Cmd+S) or run: '
+                'cp env.example .env && edit .env (see env.example next to app.py).'
+            )
+        elif sz > 30 and n_pri == 0:
+            logger.warning(
+                '.env is not empty but no KEY=value lines were parsed. '
+                'Use one assignment per line, e.g. USE_POSABIT_PRODUCTS=true (UTF-8).'
+            )
+    else:
+        logger.warning(
+            'No .env file at %s — create it or set POSaBit variables in the shell.',
+            primary,
+        )
+
+
+load_env_from_search_paths()
+
+from src.utils.posabit_menu import (
+    build_match_index,
+    find_pos_menu_match,
+    get_menu_rows_cached,
+    posabit_config_from_env,
+)
+import concurrent.futures
+
+_posabit_boot = posabit_config_from_env()
+_tok = (os.environ.get('POSABIT_ORDER_PAD_TOKEN') or '').strip()
+_feed_b = (os.environ.get('POSABIT_MENU_FEED_KEY_BOTHELL') or '').strip()
+logger.info(
+    'POSaBit env after load: USE_POSABIT_PRODUCTS=%r | token_len=%s | BOTHELL_feed_len=%s',
+    (os.environ.get('USE_POSABIT_PRODUCTS') or '').strip(),
+    len(_tok),
+    len(_feed_b),
+)
+if _posabit_boot['enabled']:
+    logger.info('POSaBit menu matching enabled (%d store feed(s)).', len(_posabit_boot.get('venues') or []))
+else:
+    logger.warning(
+        'POSaBit menu matching is OFF: %s',
+        ' | '.join(_posabit_boot.get('disabled_reasons') or ['see .env next to app.py']),
+    )
+
 import requests
 import pandas as pd
 from docxtpl import DocxTemplate
@@ -112,6 +211,14 @@ from src.ui.app import InventorySlipGenerator
 MAX_CHUNK_SIZE = 5000  # Increased to allow larger chunks
 MAX_TOTAL_SIZE = 20000  # Increased to allow larger total size
 COMPRESSION_LEVEL = 9  # Maximum compression
+
+
+def _df_from_session_json(data):
+    """Session chunk data is a list or a JSON records string; avoid pandas literal-string read_json deprecation."""
+    if isinstance(data, list):
+        return pd.DataFrame(data)
+    return pd.read_json(StringIO(data), orient='records')
+
 
 def compress_session_data(data):
     """Compress data with improved compression and size checks"""
@@ -306,6 +413,26 @@ app.config.update(
 
 Session(app)
 
+# When .env was empty at server start, saving the file later did nothing until restart.
+# Reload project .env whenever its mtime changes (dev-friendly; cheap stat + rare re-read).
+_DOTENV_APPLIED_MTIME: float = -1.0
+
+
+@app.before_request
+def _reload_project_dotenv_if_updated():
+    global _DOTENV_APPLIED_MTIME
+    try:
+        p = _ENV_FILE_PRIMARY
+        if not p.is_file():
+            return
+        mtime = p.stat().st_mtime
+        if mtime != _DOTENV_APPLIED_MTIME:
+            load_env_file(p)
+            _DOTENV_APPLIED_MTIME = mtime
+    except OSError:
+        pass
+
+
 # PDF upload DB setup
 PDF_DB_PATH = 'pdf_inventory.db'
 def init_pdf_db():
@@ -465,7 +592,7 @@ def load_config():
     
     # Default configurations
     config['PATHS'] = {
-        'template_path': os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx"),
+        'template_path': str(_APP_ROOT / "templates/documents/InventorySlips.docx"),
         'output_dir': DEFAULT_SAVE_DIR,  # Use the new DEFAULT_SAVE_DIR
         'recent_files': '',
         'recent_urls': ''
@@ -607,7 +734,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
         template_path = config['PATHS'].get('template_path')
         if not template_path or not os.path.exists(template_path):
-            template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
+            template_path = str(_APP_ROOT / "templates/documents/InventorySlips.docx")
             if not os.path.exists(template_path):
                 raise ValueError(f"Template file not found at: {template_path}")
         
@@ -1433,10 +1560,7 @@ def upload_excel():
         df_json = get_chunked_data('df_json')
         if df_json:
             try:
-                if isinstance(df_json, list):
-                    json_df = pd.DataFrame(df_json)
-                else:
-                    json_df = pd.read_json(df_json, orient='records')
+                json_df = _df_from_session_json(df_json)
                 
                 if not json_df.empty and 'Vendor' in json_df.columns:
                     json_vendor = json_df['Vendor'].iloc[0] if len(json_df) > 0 else None
@@ -1691,6 +1815,17 @@ def load_from_url(url):
 
 # FIFO feature removed - endpoint and view intentionally disabled
 
+
+def _posabit_data_view_fetch_timeout_sec() -> float:
+    """Bound how long Data View blocks on POSaBit (menu + inventory) so the browser does not hang."""
+    try:
+        # Default 90s: several menu URLs + inventory pagination can exceed 55s with POSABIT_REQUEST_TIMEOUT≈25s each.
+        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "90")
+        return max(15.0, min(t, 600.0))
+    except ValueError:
+        return 90.0
+
+
 @app.route('/data-view')
 def data_view():
     try:
@@ -1703,10 +1838,7 @@ def data_view():
             return redirect(url_for('index'))
 
         try:
-            if isinstance(df_json, list):
-                df = pd.DataFrame(df_json)
-            else:
-                df = pd.read_json(df_json, orient='records')
+            df = _df_from_session_json(df_json)
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -1751,10 +1883,7 @@ def data_view():
         
         if excel_df_json and session.get('has_excel_data'):
             try:
-                if isinstance(excel_df_json, list):
-                    excel_df = pd.DataFrame(excel_df_json)
-                else:
-                    excel_df = pd.read_json(excel_df_json, orient='records')
+                excel_df = _df_from_session_json(excel_df_json)
                 
                 logger.info(f"Found Excel data with {len(excel_df)} products")
                 
@@ -1802,6 +1931,115 @@ def data_view():
         
         # Merge Excel products with JSON products
         products.extend(excel_products)
+
+        # POSaBit menu: match imported names to store menu (optional, from .env)
+        pos_cfg = posabit_config_from_env()
+        posabit_venues = pos_cfg.get('venues') or []
+        arg_venue = (request.args.get('venue') or '').strip().lower()
+        if arg_venue and any(v['id'] == arg_venue for v in posabit_venues):
+            session['posabit_venue'] = arg_venue
+        posabit_selected = (session.get('posabit_venue') or '').strip().lower()
+        if posabit_selected and not any(v['id'] == posabit_selected for v in posabit_venues):
+            posabit_selected = ''
+        if not posabit_selected and posabit_venues:
+            posabit_selected = posabit_venues[0]['id']
+            session['posabit_venue'] = posabit_selected
+        posabit_menu_rows: list = []
+        posabit_error = None
+        posabit_match_summary = {'matched': 0, 'unmatched': 0, 'disabled': True}
+
+        if pos_cfg['enabled'] and posabit_selected:
+            posabit_match_summary['disabled'] = False
+            venue = next((v for v in posabit_venues if v['id'] == posabit_selected), posabit_venues[0])
+            cache_key = f"{venue['feed_key'][:8]}:{venue['id']}"
+            try:
+                timeout_sec = _posabit_data_view_fetch_timeout_sec()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(
+                        get_menu_rows_cached,
+                        pos_cfg['api_base'],
+                        pos_cfg['token'],
+                        venue['feed_key'],
+                        cache_key,
+                    )
+                    posabit_menu_rows = fut.result(timeout=timeout_sec)
+                norm_map, norm_qty, norm_keys = build_match_index(posabit_menu_rows)
+                for p in products:
+                    ok, disp, kind, mq = find_pos_menu_match(
+                        p.get('name') or '', norm_map, norm_qty, norm_keys
+                    )
+                    if not ok:
+                        sku_val = p.get('sku')
+                        if sku_val is not None and str(sku_val).strip():
+                            ok, disp, kind, mq = find_pos_menu_match(
+                                str(sku_val).strip(), norm_map, norm_qty, norm_keys
+                            )
+                            if ok:
+                                kind = f"sku:{kind}"
+                    p['pos_description'] = (disp or '') if ok else ''
+                    p['pos_matched'] = bool(ok)
+                    p['pos_match_kind'] = kind
+                    p['pos_menu_quantity'] = mq if ok else ''
+                    if ok:
+                        posabit_match_summary['matched'] += 1
+                    else:
+                        posabit_match_summary['unmatched'] += 1
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    'POSaBit fetch exceeded %.0fs (POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC); page loads without menu.',
+                    timeout_sec,
+                )
+                posabit_error = (
+                    f"POSaBit did not finish within {timeout_sec:.0f}s (menu and optional inventory). "
+                    "Increase POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC or POSABIT_REQUEST_TIMEOUT in .env, "
+                    "or set POSABIT_FALLBACK_TO_VENUE_INVENTORY=0 if inventory paging is slow."
+                )
+                posabit_menu_rows = []
+                for p in products:
+                    p['pos_description'] = ''
+                    p['pos_matched'] = False
+                    p['pos_match_kind'] = 'none'
+                    p['pos_menu_quantity'] = ''
+                posabit_match_summary['unmatched'] = len(products)
+            except Exception as e:
+                logger.warning('POSaBit menu fetch failed: %s', e, exc_info=True)
+                posabit_error = str(e)
+                for p in products:
+                    p['pos_description'] = ''
+                    p['pos_matched'] = False
+                    p['pos_match_kind'] = 'none'
+                    p['pos_menu_quantity'] = ''
+                posabit_match_summary['unmatched'] = len(products)
+        else:
+            for p in products:
+                p['pos_description'] = ''
+                p['pos_matched'] = False
+                p['pos_match_kind'] = 'disabled'
+                p['pos_menu_quantity'] = ''
+
+        def _incoming_qty_float(val):
+            try:
+                s = str(val if val is not None else '').strip().replace(',', '')
+                if not s:
+                    return None
+                return float(s)
+            except ValueError:
+                return None
+
+        pos_match_ready = (
+            pos_cfg['enabled']
+            and bool(posabit_selected)
+            and not posabit_match_summary.get('disabled')
+            and posabit_error is None
+        )
+        for p in products:
+            if not pos_match_ready:
+                p['row_selected_default'] = True
+                continue
+            qn = _incoming_qty_float(p.get('quantity'))
+            low_qty = qn is not None and qn <= 10.0
+            not_in_menu = not p.get('pos_matched')
+            p['row_selected_default'] = not (not_in_menu and low_qty)
 
         # Smart grouping by similar product terms, then alphabetical
         def create_smart_groups(products):
@@ -1878,7 +2116,19 @@ def data_view():
             
             return sorted_groups
 
-        sorted_groups = create_smart_groups(products)
+        show_pos_menu_order = (
+            pos_cfg['enabled']
+            and posabit_selected
+            and not posabit_match_summary.get('disabled')
+        )
+        if show_pos_menu_order:
+            matched_products = [p for p in products if p.get('pos_matched')]
+            unmatched_products = [p for p in products if not p.get('pos_matched')]
+            sorted_groups = create_smart_groups(matched_products) + create_smart_groups(
+                unmatched_products
+            )
+        else:
+            sorted_groups = create_smart_groups(products)
 
         # Load configuration
         config = load_config()
@@ -1896,7 +2146,15 @@ def data_view():
             theme=config['SETTINGS'].get('theme', 'dark'),
             version=APP_VERSION,
             vendor=transfer_info['vendor'],
-            order_date=transfer_info['accepted_date']
+            order_date=transfer_info['accepted_date'],
+            posabit_enabled=pos_cfg['enabled'],
+            posabit_disabled_reasons=pos_cfg.get('disabled_reasons') or [],
+            posabit_env_file=str(_ENV_FILE_PRIMARY),
+            posabit_venues=posabit_venues,
+            posabit_selected_venue=posabit_selected,
+            posabit_menu_rows=posabit_menu_rows,
+            posabit_error=posabit_error,
+            posabit_match_summary=posabit_match_summary,
         )
     except Exception as e:
         logger.error(f'Error in data_view: {str(e)}', exc_info=True)
@@ -1956,10 +2214,7 @@ def generate_slips():
         
         # Convert JSON to DataFrame
         try:
-            if isinstance(df_json, list):
-                df = pd.DataFrame(df_json)
-            else:
-                df = pd.read_json(df_json, orient='records')
+            df = _df_from_session_json(df_json)
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             return jsonify({
@@ -2073,10 +2328,7 @@ def generate_robust_slips_docx():
         
         # Convert JSON to DataFrame
         try:
-            if isinstance(df_json, list):
-                df = pd.DataFrame(df_json)
-            else:
-                df = pd.read_json(df_json, orient='records')
+            df = _df_from_session_json(df_json)
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -2709,6 +2961,17 @@ if __name__ == '__main__':
     try:
         # Clean up any temporary files from previous runs
         cleanup_temp_files()
+
+        # Bind: default 0.0.0.0 so 127.0.0.1 works even when "localhost" would hit IPv6-only issues.
+        # If FLASK_DEV_HOST is set, use it for both bind and the auto-opened browser URL (legacy).
+        # Otherwise FLASK_DEV_BIND + FLASK_DEV_BROWSER_HOST (browser defaults to 127.0.0.1).
+        _legacy = (os.environ.get('FLASK_DEV_HOST') or '').strip()
+        if _legacy:
+            _bind_host = _legacy
+            _browser_host = _legacy
+        else:
+            _bind_host = (os.environ.get('FLASK_DEV_BIND') or '0.0.0.0').strip() or '0.0.0.0'
+            _browser_host = (os.environ.get('FLASK_DEV_BROWSER_HOST') or '127.0.0.1').strip() or '127.0.0.1'
         
         # Try different ports in case default is taken
         ports = [8000, 8001, 8080, 8081, 8888, 9000]
@@ -2717,8 +2980,8 @@ if __name__ == '__main__':
             try:
                 print(f"Attempting to start server on port {port}...")
                 
-                # Open browser with more reliable method
-                def open_browser():
+                # Open browser with more reliable method (default arg binds loop port at def time)
+                def open_browser(bind_port=port):
                     try:
                         # Try Chrome first with --new-window flag
                         chrome_path = ''
@@ -2727,7 +2990,7 @@ if __name__ == '__main__':
                         elif sys.platform == "win32":  # Windows
                             chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
                         
-                        url = f'http://localhost:{port}'
+                        url = f'http://{_browser_host}:{bind_port}'
                         
                         # Add Chrome flags to handle authentication issues
                         chrome_flags = [
@@ -2763,16 +3026,21 @@ if __name__ == '__main__':
                     except Exception as e:
                         print(f"Error opening browser: {e}")
                         # Fallback to default browser
-                        webbrowser.open(f'http://localhost:{port}', new=2)
+                        webbrowser.open(f'http://{_browser_host}:{bind_port}', new=2)
 
                 # Delay browser opening slightly
                 threading.Timer(2.0, open_browser).start()
-                
+                print(
+                    f"\n  Local app: http://{_browser_host}:{port}/\n"
+                    f"  (listening on {_bind_host}:{port}; use that URL if the site cannot be reached)\n",
+                    flush=True,
+                )
                 app.run(
-                    host='localhost',
+                    host=_bind_host,
                     port=port,
                     debug=True,
-                    use_reloader=False  # Prevent duplicate browser windows
+                    use_reloader=False,  # Prevent duplicate browser windows
+                    threaded=True,  # Don’t block the dev server while one tab waits on POSaBit
                 )
                 break  # If server starts successfully, break the loop
                 

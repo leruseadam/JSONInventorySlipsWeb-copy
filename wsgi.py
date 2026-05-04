@@ -1,39 +1,27 @@
-import sys
 import os
-import logging
-from logging.handlers import RotatingFileHandler
-import traceback
-
-# Configure paths
-WEBAPP_PATH = '/home/adamcordova/JSONInventorySlipsWeb-copy'
-
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join(WEBAPP_PATH, 'wsgi.log'))
-    ]
-)
-logger = logging.getLogger('wsgi')
+import sys
 
 # Add application directory to Python path
-os.environ['GUNICORN_CMD_ARGS'] = '--timeout 600'
-if WEBAPP_PATH not in sys.path:
-    sys.path.insert(0, WEBAPP_PATH)
-    logger.info(f'Added {WEBAPP_PATH} to Python path')
+project_home = "/home/adamcordova/JSONInventorySlipsWeb-copy"
+if project_home not in sys.path:
+    sys.path.insert(0, project_home)
 
-try:
-    # Import the Flask application
-    from app import app as application
-    logger.info('Successfully imported application')
+# So the worker cwd is the repo (helps Flask and finding .env)
+os.chdir(project_home)
 
-except Exception as e:
-    logger.error('Failed to import application:')
-    logger.error(traceback.format_exc())
-    raise
+# API tokens: put them in project_home/.env (same folder as app.py), then:
+_env = os.path.join(project_home, ".env")
+if os.path.isfile(_env):
+    try:
+        from dotenv import load_dotenv
 
-# This is the important part for PythonAnywhere
-if __name__ == '__main__':
-    application.run(debug=False, use_reloader=False)
+        load_dotenv(_env, override=True)
+    except ImportError:
+        pass  # app.py still loads .env with its built-in parser on import
+
+# Optional: override or add without a file (do not commit real values)
+# os.environ["POSABIT_ORDER_PAD_TOKEN"] = "your-token"
+# os.environ["POSABIT_MENU_FEED_KEY_BOTHELL"] = "your-feed-uuid"
+
+# Import app as application
+from app import app as application

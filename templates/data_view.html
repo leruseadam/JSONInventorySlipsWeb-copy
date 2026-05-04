@@ -3,7 +3,46 @@
 {% block title %}Data View - Inventory Slip Generator{% endblock %}
 
 {% block content %}
-<div class="container mt-4 data-view">
+{# base.html already wraps block content in .container — avoid nested container + stray closes that break the layout. #}
+<div class="data-view">
+  <style>
+    .pos-in-menu-row td { background: rgba(25, 135, 84, 0.14) !important; }
+    .pos-in-menu-row:hover td { background: rgba(25, 135, 84, 0.22) !important; }
+    /* Rows with checked “include in slips” checkbox */
+    .table-inventory tbody tr.group-product-row:has(.product-checkbox:checked) td {
+      background: rgba(137, 180, 250, 0.12) !important;
+      box-shadow: inset 4px 0 0 0 rgba(137, 180, 250, 0.9);
+    }
+    .table-inventory tbody tr.group-product-row:has(.product-checkbox:checked):hover td {
+      background: rgba(137, 180, 250, 0.18) !important;
+    }
+    .table-inventory tbody tr.group-product-row.pos-in-menu-row:has(.product-checkbox:checked) td {
+      background: rgba(25, 135, 84, 0.2) !important;
+      box-shadow: inset 4px 0 0 0 rgba(137, 180, 250, 0.95);
+    }
+    .table-inventory tbody tr.group-product-row.pos-in-menu-row:has(.product-checkbox:checked):hover td {
+      background: rgba(25, 135, 84, 0.28) !important;
+    }
+    /* Bootstrap .text-muted is too dark on these cards; keep copy readable */
+    .data-view {
+      --dv-body: #cdd6f4;
+      --dv-muted: #a6adc8;
+    }
+    .data-view .card-body,
+    .data-view .card-body p,
+    .data-view .card-body label {
+      color: var(--dv-body);
+      font-weight: 400;
+    }
+    .data-view .card-body .text-muted,
+    .data-view .card-body small.text-muted {
+      color: var(--dv-muted) !important;
+    }
+    .data-view .generate-slips-hint {
+      color: #dce0f0 !important;
+      font-weight: 400;
+    }
+  </style>
     {% if vendor or order_date %}
     <div class="row mb-3">
         <div class="col-12">
@@ -59,9 +98,104 @@
             </div>
         </div>
     </div>
-  </div>
 
   <hr>
+
+  {% set posabit_enabled = posabit_enabled|default(false) %}
+  {% set posabit_venues = posabit_venues|default([]) %}
+  {% set posabit_selected_venue = posabit_selected_venue|default('') %}
+  {% set posabit_menu_rows = posabit_menu_rows|default([]) %}
+  {% set posabit_error = posabit_error|default(none) %}
+  {% set posabit_match_summary = posabit_match_summary|default({'matched': 0, 'unmatched': 0, 'disabled': true}) %}
+  {% set posabit_disabled_reasons = posabit_disabled_reasons|default([]) %}
+  {% set posabit_env_file = posabit_env_file|default('') %}
+
+  {% if not posabit_enabled %}
+  <div class="row mb-3">
+    <div class="col-12">
+      <div class="alert alert-warning mb-0">
+        <h6 class="alert-heading mb-2"><i class="fas fa-store-slash"></i> POSaBit matching is off</h6>
+        <p class="small mb-2">The Data View table will not show <strong>Description</strong> or <strong>POS menu</strong> columns until this is configured. Expected env file: <code>{{ posabit_env_file }}</code></p>
+        <p class="small mb-2 text-muted">After restarting Flask, check the <strong>terminal</strong> where the server runs: you should see <code>Loaded environment file: …</code>. If you see <code>No .env file at …</code>, the process cannot read that path—save your <code>.env</code> there (same folder as <code>app.py</code>) and restart.</p>
+        <ul class="small mb-0">
+          {% for reason in posabit_disabled_reasons %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if posabit_enabled %}
+  <div class="row mb-3">
+    <div class="col-12">
+      <div class="card border-info">
+        <div class="card-header bg-transparent text-info d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <h5 class="mb-0"><i class="fas fa-store"></i> POSaBit menu &amp; matching</h5>
+          {% if posabit_venues|length > 1 %}
+          <form method="get" class="d-flex align-items-center gap-2 mb-0">
+            <label for="posVenueSelect" class="mb-0 small text-muted">Store</label>
+            <select name="venue" id="posVenueSelect" class="form-select form-select-sm" style="width:auto; min-width:10rem;" onchange="this.form.submit()">
+              {% for v in posabit_venues %}
+              <option value="{{ v.id }}" {% if v.id == posabit_selected_venue %}selected{% endif %}>{{ v.label }}</option>
+              {% endfor %}
+            </select>
+          </form>
+          {% endif %}
+        </div>
+        <div class="card-body py-2">
+          {% if posabit_error %}
+          <div class="alert alert-warning py-2 mb-2"><i class="fas fa-exclamation-triangle"></i> Could not load POS menu: {{ posabit_error }}</div>
+          {% elif not posabit_match_summary.disabled %}
+          <p class="mb-2 small text-muted">
+            <strong>{{ posabit_menu_rows|length }}</strong> products on the live menu.
+            Imported rows: <span class="text-success">{{ posabit_match_summary.matched }} in menu</span>,
+            <span class="text-warning">{{ posabit_match_summary.unmatched }} no match</span>.
+            <strong>Description</strong> shows the POS product name when a match is found (same row as your JSON product name).
+            Rows <strong>in the POS menu</strong> are highlighted and listed first; <strong>POS menu qty</strong> is on-hand from POSaBit when the API provides it.
+          </p>
+          {% if posabit_menu_rows|length == 0 %}
+          <div class="alert alert-warning py-2 mb-2 small">
+            The API responded but returned <strong>no menu items</strong>. Check the Flask terminal for <code>POSaBit menu_feed has 0 products</code>.
+            If <code>POSABIT_USE_VENUE_INVENTORIES=1</code> and <code>POSABIT_FALLBACK_TO_VENUE_INVENTORY=1</code>, the app should load <strong>venue inventory SKUs</strong> when the public menu feed is empty—check the Flask log for <code>loaded … inventory SKUs</code>.
+            Otherwise confirm the <strong>menu feed UUID</strong>; set <code>POSABIT_VENUE_TOKEN</code> if POSaBit gave a separate venue token; or try <code>POSABIT_USE_VENUE_INVENTORIES=0</code> for non-venue endpoints only.
+          </div>
+          {% endif %}
+          {% endif %}
+          {% if posabit_menu_rows and not posabit_error %}
+          {% set _menu_total = posabit_menu_rows|length %}
+          {% set _menu_cap = 500 %}
+          {% set _menu_preview = posabit_menu_rows[:_menu_cap] %}
+          <details class="posabit-menu-details">
+            <summary class="btn btn-sm btn-outline-info mb-0">View POS product menu preview ({{ _menu_total }} items{% if _menu_total > _menu_cap %}; showing first {{ _menu_cap }}{% endif %})</summary>
+            {% if _menu_total > _menu_cap %}
+            <p class="small text-muted mt-2 mb-1">Large menus are capped here so the page stays responsive. Matching still uses the <strong>full</strong> menu.</p>
+            {% endif %}
+            <div class="table-responsive mt-2 posabit-menu-scroll">
+              <table class="table table-sm table-bordered table-dark mb-0">
+                <thead><tr><th>Name</th><th>Qty</th><th>Brand</th><th>Strain</th><th>Type</th><th>Category</th></tr></thead>
+                <tbody>
+                  {% for m in _menu_preview %}
+                  <tr>
+                    <td>{{ m.name | e }}</td>
+                    <td>{{ (m.menu_quantity or '') | e }}</td>
+                    <td>{{ m.brand | e }}</td>
+                    <td>{{ m.strain | e }}</td>
+                    <td>{{ m.product_type | e }}</td>
+                    <td>{{ m.category | e }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- View Mode Toggle -->
   <div class="row mb-3">
@@ -91,8 +225,8 @@
                   title="Generate Order Sheets (more reliable)">
             <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Order Sheet
           </button>
-          <p style="color: white;" class="text-muted mt-2 mb-0">
-            <small>Select products from the table below, then click one of the generate buttons above</small>
+          <p class="generate-slips-hint mt-2 mb-0 small">
+            Select products from the table below, then click one of the generate buttons above.
           </p>
         </div>
       </div>
@@ -127,17 +261,20 @@
                     <input type="checkbox" class="form-check-input" id="selectAllCheckbox" aria-label="Select all products">
                   </th>
                   <th>Product Name</th>
+                  {% if posabit_enabled %}<th>Description</th>{% endif %}
                   <th>Strain</th>
                   <th>SKU</th>
-                  <th>Quantity</th>
+                  <th>Quantity{% if posabit_enabled %} <span class="text-muted small fw-normal">(incoming)</span>{% endif %}</th>
+                  {% if posabit_enabled %}<th>POS menu qty</th>{% endif %}
                   <th>Source</th>
+                  {% if posabit_enabled %}<th>POS menu</th>{% endif %}
                 </tr>
               </thead>
               <tbody id="productsTableBody">
                                                 {% for group in groups %}
                                                     {% set group_idx = loop.index0 %}
                                                     <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group_idx }}">
-                                                        <td colspan="6" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
+                                                        <td colspan="{% if posabit_enabled %}9{% else %}6{% endif %}" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
                                                             <div class="d-flex justify-content-between align-items-center">
                                                                 <span style="font-weight: 600;">Group {{ loop.index }} - {{ group.group_label }}</span>
                                                                 <div class="form-check">
@@ -148,19 +285,42 @@
                                                         </td>
                                                     </tr>
                                                     {% for product in group.products %}
-                                                                            <tr class="group-product-row" data-index="{{ product.id }}" data-group="{{ group_idx }}" draggable="true">
+                                                                            <tr class="group-product-row{% if posabit_enabled and product.pos_matched %} pos-in-menu-row{% endif %}" data-index="{{ product.id }}" data-group="{{ group_idx }}" draggable="true">
                                                                                 <td>
-                                                                                    <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" checked aria-label="Select {{ product.name|safe }}">
+                                                                                    <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" {% if product.row_selected_default|default(true) %}checked{% endif %} aria-label="Select {{ product.name|safe }}">
                                                                                 </td>
                                                                                 <td>{{ product.name | replace('Medically Compliant - ', '') | safe }}</td>
+                                                                                {% if posabit_enabled %}
+                                                                                <td class="pos-desc-cell">{% if product.pos_description %}<span title="Matched POS menu name">{{ product.pos_description | e }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                                                                                {% endif %}
                                                                                 <td>{{ product.strain | safe }}</td>
                                                                                 <td>{{ product.sku | safe }}</td>
-                                                                                <td>{{ product.quantity | safe }}</td>
+                                                                                <td class="align-middle">
+                                                                                  <span class="incoming-qty fw-semibold">{{ product.quantity | safe }}</span>
+                                                                                </td>
+                                                                                {% if posabit_enabled %}
+                                                                                <td class="align-middle text-center pos-menu-qty-cell">
+                                                                                  {% if product.pos_matched and product.pos_menu_quantity %}
+                                                                                  <span class="text-success fw-semibold">{{ product.pos_menu_quantity | e }}</span>
+                                                                                  {% else %}
+                                                                                  <span class="text-muted">—</span>
+                                                                                  {% endif %}
+                                                                                </td>
+                                                                                {% endif %}
                                                                                 <td>
                                                                                     <span class="badge {% if product.source == 'Excel Upload' %}bg-success{% elif product.source == 'Bamboo' %}bg-info{% elif product.source == 'Cultivera' %}bg-warning{% elif product.source == 'GrowFlow' %}bg-primary{% else %}bg-secondary{% endif %}">
                                                                                         {{ product.source | safe }}
                                                                                     </span>
                                                                                 </td>
+                                                                                {% if posabit_enabled %}
+                                                                                <td>
+                                                                                    {% if product.pos_matched %}
+                                                                                    <span class="badge bg-success" title="Match: {{ product.pos_match_kind|default('') }}">In menu</span>
+                                                                                    {% else %}
+                                                                                    <span class="badge bg-secondary" title="No confident match in POS menu">Not in menu</span>
+                                                                                    {% endif %}
+                                                                                </td>
+                                                                                {% endif %}
                                                                             </tr>
                                                     {% endfor %}
                                                 {% endfor %}
@@ -172,91 +332,88 @@
     </div>
   </div>
 </div>
+{% endblock %}
 
-        <!-- Revamped Generation Splash / Progress Modal -->
-        <div class="modal fade" id="progressModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-dialog-centered modal-lg" style="max-width:560px;">
-                <div class="modal-content generation-splash border-0 shadow-lg">
-                    <div class="position-absolute top-0 end-0 pe-3 pt-3" style="z-index:10;">
-                        <button type="button" class="btn btn-sm btn-outline-light rounded-pill d-none" id="cancelGenerationBtn">
-                            <i class="fas fa-stop-circle me-1"></i> Cancel
-                        </button>
+{% block modals %}
+<!-- Revamped Generation Splash / Progress Modal -->
+<div class="modal fade" id="progressModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg" style="max-width:560px;">
+        <div class="modal-content generation-splash border-0 shadow-lg">
+            <div class="position-absolute top-0 end-0 pe-3 pt-3" style="z-index:10;">
+                <button type="button" class="btn btn-sm btn-outline-light rounded-pill d-none" id="cancelGenerationBtn">
+                    <i class="fas fa-stop-circle me-1"></i> Cancel
+                </button>
+            </div>
+            <div class="modal-body py-5 px-5">
+                <div class="text-center mb-4">
+                    <div class="dual-spinner mx-auto mb-4">
+                        <div class="spinner-inner"></div>
+                        <div class="spinner-outer"></div>
                     </div>
-                    <div class="modal-body py-5 px-5">
-                        <div class="text-center mb-4">
-                            <div class="dual-spinner mx-auto mb-4">
-                                <div class="spinner-inner"></div>
-                                <div class="spinner-outer"></div>
-                            </div>
-                            <h4 class="fw-semibold mb-2 tracking-tight" style="letter-spacing:.5px;">
-                                <span class="text-gradient">Generating Inventory Slips</span>
-                            </h4>
-                            <p class="text-muted mb-0 small">Optimizing layout, adjusting fonts, building document…</p>
-                        </div>
-                        <div class="progress soft-progress mb-3" style="height: 1.1rem;">
-                            <div id="mainProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-                        </div>
-                        <div class="d-flex align-items-center justify-content-between mb-4 small text-muted">
-                            <span id="progressPhase">Preparing</span>
-                            <span id="progressPercent">0%</span>
-                        </div>
-                        <ul class="list-unstyled small text-start mb-0" id="statusChecklist">
-                            <li class="status-item"><i class="fas fa-circle-notch fa-spin me-2 text-info"></i>Collecting selected products</li>
-                            <li class="status-item opacity-50" data-step="2"><i class="far fa-circle me-2"></i>Applying formatting rules</li>
-                            <li class="status-item opacity-50" data-step="3"><i class="far fa-circle me-2"></i>Placing content into template</li>
-                            <li class="status-item opacity-50" data-step="4"><i class="far fa-circle me-2"></i>Finalizing & preparing download</li>
-                        </ul>
-                        <div class="mt-4 text-center small text-secondary fst-italic">
-                            This window will close automatically when your download begins.
-                        </div>
-                    </div>
+                    <h4 class="fw-semibold mb-2 tracking-tight" style="letter-spacing:.5px;">
+                        <span class="text-gradient">Generating Inventory Slips</span>
+                    </h4>
+                    <p class="text-muted mb-0 small">Optimizing layout, adjusting fonts, building document…</p>
+                </div>
+                <div class="progress soft-progress mb-3" style="height: 1.1rem;">
+                    <div id="mainProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+                <div class="d-flex align-items-center justify-content-between mb-4 small text-muted">
+                    <span id="progressPhase">Preparing</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <ul class="list-unstyled small text-start mb-0" id="statusChecklist">
+                    <li class="status-item"><i class="fas fa-circle-notch fa-spin me-2 text-info"></i>Collecting selected products</li>
+                    <li class="status-item opacity-50" data-step="2"><i class="far fa-circle me-2"></i>Applying formatting rules</li>
+                    <li class="status-item opacity-50" data-step="3"><i class="far fa-circle me-2"></i>Placing content into template</li>
+                    <li class="status-item opacity-50" data-step="4"><i class="far fa-circle me-2"></i>Finalizing & preparing download</li>
+                </ul>
+                <div class="mt-4 text-center small text-secondary fst-italic">
+                    This window will close automatically when your download begins.
                 </div>
             </div>
         </div>
-        <style>
-            .generation-splash {background:rgba(28,30,45,.85);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);border-radius:28px;position:relative;overflow:hidden;}
-            .generation-splash:before {content:"";position:absolute;inset:0;background:radial-gradient(circle at 30% 20%,rgba(0,160,255,.15),transparent 60%),radial-gradient(circle at 80% 70%,rgba(0,255,200,.12),transparent 65%);opacity:.9;pointer-events:none;}
-            .text-gradient {background:linear-gradient(90deg,#4dd0ff,#6b9dff,#8f79ff);-webkit-background-clip:text;color:transparent;}
-            .dual-spinner {position:relative;width:120px;height:120px;}
-            .dual-spinner .spinner-inner, .dual-spinner .spinner-outer {position:absolute;border:3px solid transparent;border-top-color:#4dd0ff;border-radius:50%;animation:spin 1.4s linear infinite;}
-            .dual-spinner .spinner-inner {inset:28px;border-width:3px;animation-duration:1s;}
-            .dual-spinner .spinner-outer {inset:0;border-width:4px;filter:drop-shadow(0 0 6px rgba(77,208,255,.35));}
-            @keyframes spin {to {transform:rotate(360deg);}}
-            .soft-progress {background:rgba(255,255,255,.08);border-radius:12px;overflow:hidden;}
-            .soft-progress .progress-bar {background:linear-gradient(90deg,#2196f3,#00bcd4);transition:width .35s ease;}
-            .status-item {transition:all .3s ease;}
-            .status-item.active {opacity:1 !important;}
-            .status-item.done i {color:#30d977 !important;}
-            .status-item.done i:before {content:"\f00c";font-family:"Font Awesome 5 Free";font-weight:900;}
-            /* Force the progress modal to remain centered in the viewport
-               regardless of page scroll or stacking context. This overrides
-               Bootstrap's dialog placement when necessary and ensures the
-               splash is always visible. */
-            #progressModal .modal-dialog {
-                position: fixed !important;
-                top: 50% !important;
-                left: 50% !important;
-                transform: translate(-50%, -50%) !important;
-                margin: 0 !important;
-                max-width: 560px;
-                z-index: 2060; /* above default backdrop/modal values */
-            }
-            /* Ensure the backdrop sits just below the dialog */
-            .modal-backdrop.show { z-index: 2050 !important; }
-            /* Make the fallback overlay higher than backdrop but below dialog if needed */
-            #generationOverlay { z-index:2040; }
-        </style>
-        <!-- Minimal overlay fallback (always available) -->
-        <div id="generationOverlay" style="display:none; position:fixed; inset:0; z-index:1060; background:rgba(10,12,24,.72); backdrop-filter:blur(8px) saturate(120%); -webkit-backdrop-filter:blur(8px) saturate(120%);">
-            <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; color:#e6f3ff;">
-                <div class="spinner-border text-info" role="status" style="width:3rem;height:3rem;"></div>
-                <div class="mt-3 small">Generating… please wait</div>
-            </div>
-        </div>
+    </div>
+</div>
+<style>
+    .generation-splash {background:rgba(28,30,45,.85);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);border-radius:28px;position:relative;overflow:hidden;}
+    .generation-splash:before {content:"";position:absolute;inset:0;background:radial-gradient(circle at 30% 20%,rgba(0,160,255,.15),transparent 60%),radial-gradient(circle at 80% 70%,rgba(0,255,200,.12),transparent 65%);opacity:.9;pointer-events:none;}
+    .text-gradient {background:linear-gradient(90deg,#4dd0ff,#6b9dff,#8f79ff);-webkit-background-clip:text;color:transparent;}
+    .dual-spinner {position:relative;width:120px;height:120px;}
+    .dual-spinner .spinner-inner, .dual-spinner .spinner-outer {position:absolute;border:3px solid transparent;border-top-color:#4dd0ff;border-radius:50%;animation:spin 1.4s linear infinite;}
+    .dual-spinner .spinner-inner {inset:28px;border-width:3px;animation-duration:1s;}
+    .dual-spinner .spinner-outer {inset:0;border-width:4px;filter:drop-shadow(0 0 6px rgba(77,208,255,.35));}
+    @keyframes spin {to {transform:rotate(360deg);}}
+    .soft-progress {background:rgba(255,255,255,.08);border-radius:12px;overflow:hidden;}
+    .soft-progress .progress-bar {background:linear-gradient(90deg,#2196f3,#00bcd4);transition:width .35s ease;}
+    .status-item {transition:all .3s ease;}
+    .status-item.active {opacity:1 !important;}
+    .status-item.done i {color:#30d977 !important;}
+    .status-item.done i:before {content:"\f00c";font-family:"Font Awesome 5 Free";font-weight:900;}
+    #progressModal .modal-dialog {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        margin: 0 !important;
+        max-width: 560px;
+        z-index: 2060;
+    }
+    .modal-backdrop.show { z-index: 2050 !important; }
+    #generationOverlay { z-index:2040; }
+</style>
+<div id="generationOverlay" style="display:none; position:fixed; inset:0; z-index:1060; background:rgba(10,12,24,.72); backdrop-filter:blur(8px) saturate(120%); -webkit-backdrop-filter:blur(8px) saturate(120%);">
+    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; color:#e6f3ff;">
+        <div class="spinner-border text-info" role="status" style="width:3rem;height:3rem;"></div>
+        <div class="mt-3 small">Generating… please wait</div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+const GROUP_COLSPAN = {{ 9 if (posabit_enabled|default(false)) else 6 }};
+const POSABIT_ENABLED = {{ (posabit_enabled|default(false))|tojson }};
 let progressModal;
 let mainProgressBarEl, progressPhaseEl, progressPercentEl, statusChecklistEl;
 let progressBar;
@@ -698,7 +855,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
     
-    // Initialize all select checkboxes to checked state since products are pre-selected
+    // Sync header / group “select all” with per-row defaults (e.g. low-qty off-menu rows unchecked)
     updateSelectAllCheckbox();
     
     // Initialize all group select all checkboxes
@@ -723,21 +880,32 @@ function exportToCSV() {
     const rows = document.querySelectorAll('tbody tr');
     const csvData = [];
     
-    // Add header
-    csvData.push(['Product Name', 'Strain', 'SKU', 'Quantity', 'Source']);
+    csvData.push(POSABIT_ENABLED
+        ? ['Product Name', 'Description (POS match)', 'Strain', 'SKU', 'Quantity (incoming)', 'POS menu qty', 'Source', 'POS menu']
+        : ['Product Name', 'Strain', 'SKU', 'Quantity', 'Source']);
     
-    // Add selected rows
     selectedProducts.forEach(productId => {
         const row = rows[productId];
         if (row) {
             const cells = row.querySelectorAll('td');
-            const rowData = [
-                cells[1].textContent.trim(),
-                cells[2].textContent.trim(),
-                cells[3].textContent.trim(),
-                cells[4].textContent.trim(),
-                cells[5].textContent.trim()
-            ];
+            const rowData = POSABIT_ENABLED
+                ? [
+                    cells[1].textContent.trim(),
+                    cells[2].textContent.trim(),
+                    cells[3].textContent.trim(),
+                    cells[4].textContent.trim(),
+                    cells[5].textContent.trim(),
+                    cells[6].textContent.trim(),
+                    cells[7].textContent.trim(),
+                    cells[8].textContent.trim()
+                ]
+                : [
+                    cells[1].textContent.trim(),
+                    cells[2].textContent.trim(),
+                    cells[3].textContent.trim(),
+                    cells[4].textContent.trim(),
+                    cells[5].textContent.trim()
+                ];
             csvData.push(rowData);
         }
     });
@@ -776,7 +944,16 @@ function exportToJSON() {
         const row = rows[productId];
         if (row) {
             const cells = row.querySelectorAll('td');
-            const productData = {
+            const productData = POSABIT_ENABLED ? {
+                product_name: cells[1].textContent.trim(),
+                pos_description: cells[2].textContent.trim(),
+                strain: cells[3].textContent.trim(),
+                sku: cells[4].textContent.trim(),
+                quantity: cells[5].textContent.trim(),
+                pos_menu_quantity: cells[6].textContent.trim(),
+                source: cells[7].textContent.trim(),
+                pos_menu: cells[8].textContent.trim()
+            } : {
                 product_name: cells[1].textContent.trim(),
                 strain: cells[2].textContent.trim(),
                 sku: cells[3].textContent.trim(),
@@ -877,7 +1054,7 @@ function handleDrop(e) {
                     nextGroupHeader.className = 'table-group-header bg-light group-draggable';
                     nextGroupHeader.setAttribute('draggable', 'true');
                     nextGroupHeader.setAttribute('data-group', nextGroupNum);
-                    nextGroupHeader.innerHTML = `<td colspan=\"6\" style=\"font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;\">Group ${nextGroupNum + 1}</td>`;
+                    nextGroupHeader.innerHTML = `<td colspan=\"${GROUP_COLSPAN}\" style=\"font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;\">Group ${nextGroupNum + 1}</td>`;
                     tbody.appendChild(nextGroupHeader);
                 }
                 let nextGroupRows = Array.from(tbody.querySelectorAll(`.group-product-row[data-group='${nextGroupNum}']`));
@@ -1016,7 +1193,7 @@ function handleGroupDrop(e) {
             newHeader.className = 'table-group-header bg-light group-draggable';
             newHeader.setAttribute('draggable', 'true');
             newHeader.setAttribute('data-group', currentGroup);
-            newHeader.innerHTML = `<td colspan="6" style="font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;">Group ${currentGroup + 1}</td>`;
+            newHeader.innerHTML = `<td colspan="${GROUP_COLSPAN}" style="font-weight:bold; background:#f8f9fa; border-top:2px solid #dee2e6; cursor:move;">Group ${currentGroup + 1}</td>`;
             newOrder.push(newHeader);
             for (let i = 0; i < 4 && buffer.length > 0; i++) {
                 let row = buffer.shift();
@@ -1109,6 +1286,16 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .table-inventory input[type="checkbox"]:checked {
     accent-color: #7fd6ff;
+}
+
+.posabit-menu-scroll {
+    max-height: 380px;
+    overflow-y: auto;
+    border-radius: 0.35rem;
+}
+.posabit-menu-details summary {
+    cursor: pointer;
+    list-style-position: inside;
 }
 
 .table-tip-alert {

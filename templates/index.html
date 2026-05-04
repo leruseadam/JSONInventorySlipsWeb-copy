@@ -44,7 +44,41 @@
               </div>
             </div>
             <button type="submit" class="btn btn-primary">
-              <i class="fas fa-upload"></i> Upload
+              <i class="fas fa-upload"></i> Upload CSV
+            </button>
+          </form>
+          <hr>
+          <!-- Upload Excel File (LabelMaker Format) -->
+          <form action="{{ url_for('upload_excel') }}" method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+              <label for="excel_file" class="form-label">
+                <i class="fas fa-file-excel text-success"></i> Upload Excel Database (LabelMaker Format)
+              </label>
+              <input type="file" class="form-control" id="excel_file" name="excel_file" accept=".xlsx,.xls">
+              <div class="form-text">
+                Upload an Excel file with product database fields:
+                <br>
+                <small class="text-muted">
+                  <span class="badge bg-success">Product Name</span>
+                  <span class="badge bg-success">Brand</span>
+                  <span class="badge bg-success">Vendor</span>
+                  <span class="badge bg-success">Type</span>
+                  <span class="badge bg-success">Weight</span>
+                  <span class="badge bg-success">Strain</span>
+                  <span class="badge bg-success">Lineage</span>
+                  <span class="badge bg-success">Price</span>
+                  <span class="badge bg-success">SKU</span>
+                  <span class="badge bg-success">Quantity</span>
+                </small>
+                <br>
+                <small class="text-warning">
+                  <i class="fas fa-filter"></i> <strong>Smart Filtering:</strong> If you've already loaded JSON data from a URL, 
+                  the Excel upload will automatically show only items from the same vendor!
+                </small>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-success">
+              <i class="fas fa-file-excel"></i> Upload Excel
             </button>
           </form>
           <hr>

@@ -233,6 +233,16 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             status_callback("Combining pages...")
         
         master = pages[0]
+        # Ensure docxcompose.properties has access to pkg_resources (some installations miss the import)
+        try:
+            import pkg_resources as _pkg_resources
+            import importlib
+            props_mod = importlib.import_module('docxcompose.properties')
+            if not hasattr(props_mod, 'pkg_resources'):
+                props_mod.pkg_resources = _pkg_resources
+        except Exception:
+            pass
+
         composer = Composer(master)
         for i, doc in enumerate(pages[1:]):
             if progress_callback:
@@ -268,6 +278,8 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         return True, outpath
     
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         if status_callback:
             status_callback(f"Error: {e}")
-        return False, str(e) 
+        return False, tb
