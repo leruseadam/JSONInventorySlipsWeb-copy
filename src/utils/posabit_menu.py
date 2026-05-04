@@ -335,6 +335,50 @@ def normalize_pos_menu_qty_cell(val: Any) -> str:
     return s
 
 
+def _slip_qty_compact(s: str) -> str:
+    """Readable number for slip merge fields (no trailing .0 noise)."""
+    try:
+        f = float(s.replace(",", "").strip())
+        if abs(f) <= 1e-15:
+            return ""
+        if f == int(f):
+            return str(int(f))
+        t = f"{f:.4f}".rstrip("0").rstrip(".")
+        return t
+    except ValueError:
+        return s[:24] if s else ""
+
+
+def format_old_units_remaining_for_slip(record: Any) -> str:
+    """
+    DOCX ``{{LabelN.POS}}`` (“Old Units Remaining”): prefer cleaned POS qty, then raw API qty,
+    then incoming manifest quantity (optional) so the cell is not left blank when data exists.
+
+    Set ``POSABIT_SLIP_OLD_UNITS_INCOMING_FALLBACK=0`` to skip the incoming-qty fallback.
+    """
+    if not isinstance(record, dict):
+        record = {}
+    pos = normalize_pos_menu_qty_cell(record.get("POS Quantity"))
+    if pos:
+        return pos
+    raw = str(record.get("POS Quantity Raw") or "").strip().replace(",", "")
+    if raw and not _is_zero_like_qty_text(raw):
+        return _slip_qty_compact(raw)
+    if not _truthy_env("POSABIT_SLIP_OLD_UNITS_INCOMING_FALLBACK", "1"):
+        return ""
+    for k in ("Quantity Received*", "Quantity*", "quantity"):
+        v = record.get(k)
+        if v is None:
+            continue
+        s = str(v).strip().replace(",", "")
+        if not s:
+            continue
+        if _is_zero_like_qty_text(s):
+            continue
+        return _slip_qty_compact(s)
+    return ""
+
+
 def _extract_menu_quantity(d: Dict[str, Any]) -> str:
     """Best-effort qty from menu_item or inventory API objects (field names vary)."""
     if not isinstance(d, dict):
@@ -454,6 +498,24 @@ def parse_menu_products(menu_json: Dict[str, Any]) -> List[Dict[str, Any]]:
                 pn = str(p.get("name") or "").strip()
                 if pn and pn not in variants:
                     variants.append(pn)
+            # Barcode/SKU on menu items (Bamboo imports often match POS by barcode, not by long name).
+            for key in (
+                "sku",
+                "product_sku",
+                "product_id",
+                "productId",
+                "id",
+                "barcode",
+                "upc",
+                "external_id",
+                "menu_item_id",
+            ):
+                raw = item.get(key)
+                if raw is None:
+                    continue
+                sid = str(raw).strip()
+                if sid and sid not in variants:
+                    variants.append(sid)
             mq = _extract_menu_quantity(item)
             out.append(
                 {
@@ -680,8 +742,11 @@ def _best_token_match(
 ) -> Tuple[Optional[str], Optional[str], float]:
     """Return (normalized_key, display, score) for best token-overlap match."""
     t_import = _word_tokens(import_norm)
-    if len(t_import) < 2:
+    if not t_import:
         return None, None, 0.0
+    # Single distinctive token (e.g. strain name) still helps when name is short.
+    if len(t_import) < 2:
+        min_jaccard = min(min_jaccard, 0.18)
     best_k: Optional[str] = None
     best_score = 0.0
     ln = len(import_norm)
@@ -740,8 +805,20 @@ def find_pos_menu_match(
     fuzzy_candidates = [
         nk for nk in norm_keys if abs(len(nk) - ln) <= len_slack
     ]
-    if len(fuzzy_candidates) > 600:
-        fuzzy_candidates = fuzzy_candidates[:600]
+    try:
+        cap = int(os.environ.get("POSABIT_FUZZY_CANDIDATE_CAP") or "3000")
+    except ValueError:
+        cap = 3000
+    cap = max(400, min(cap, 20_000))
+    if len(fuzzy_candidates) > cap:
+        # First 600 by dict order was arbitrary and dropped real matches on large menus.
+        fuzzy_candidates.sort(
+            key=lambda nk: (
+                -difflib.SequenceMatcher(None, n, nk).quick_ratio(),
+                abs(len(nk) - ln),
+            )
+        )
+        fuzzy_candidates = fuzzy_candidates[:cap]
     close = (
         difflib.get_close_matches(n, fuzzy_candidates, n=1, cutoff=fuzzy_cutoff)
         if fuzzy_candidates

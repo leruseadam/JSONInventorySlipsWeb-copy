@@ -56,6 +56,7 @@ from io import BytesIO
 import zlib
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Third-party imports
 from flask import (
@@ -169,6 +170,7 @@ load_env_from_search_paths()
 from src.utils.posabit_menu import (
     build_match_index,
     find_pos_menu_match,
+    format_old_units_remaining_for_slip,
     get_menu_rows_cached,
     normalize_pos_menu_qty_cell,
     posabit_config_from_env,
@@ -719,9 +721,6 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             status_callback("Error: No data selected.")
         return False, "No data selected."
 
-def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
-    # ...existing code...
-    
     try:
         # Get vendor name from first row
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
@@ -774,6 +773,8 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         total_chunks = (len(cleaned_records) + items_per_page - 1) // items_per_page
         current_chunk = 0
 
+        tpl = DocxTemplate(template_path)
+
         for chunk in chunk_records(cleaned_records, items_per_page):
             current_chunk += 1
             if progress_callback:
@@ -784,8 +785,6 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                 status_callback(f"Generating page {current_chunk} of {total_chunks}...")
 
             try:
-                # Create a fresh template instance for each chunk
-                tpl = DocxTemplate(template_path)
                 context = {}
 
                 # Fill context with records - modified vendor handling
@@ -795,15 +794,26 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                     # If vendor is in format "license - name", extract just the name
                     if " - " in vendor_name:
                         vendor_name = vendor_name.split(" - ")[1]
-                    
+
+                    qty_raw = record.get("Quantity Received*", record.get("Quantity*", ""))
+                    try:
+                        qty_disp = int(float(qty_raw))
+                    except (ValueError, TypeError):
+                        qty_disp = str(qty_raw)[:20] if qty_raw is not None else ""
+
                     # Ensure all values are strings and not too long
+                    # POS = template "Old Units Remaining" (InventorySlips.docx {{LabelN.POS}})
                     context[f"Label{idx}"] = {
                         "ProductName": str(record.get("Product Name*", ""))[:100],
                         "Barcode": str(record.get("Barcode*", ""))[:50],
                         "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
-                        "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
+                        "QuantityReceived": qty_disp,
+                        "POS": format_old_units_remaining_for_slip(record),
                         "Vendor": str(vendor_name or "Unknown Vendor")[:50],
-                        "ProductType": str(record.get("Product Type*", ""))[:50]
+                        "StrainName": str(record.get("Strain Name", ""))[:80],
+                        "ProductType": str(record.get("Product Type*", record.get("Inventory Type", "")))[:50],
+                        "THCContent": str(record.get("THC Content", ""))[:20],
+                        "CBDContent": str(record.get("CBD Content", ""))[:20],
                     }
 
                 # Fill remaining slots with empty values
@@ -813,8 +823,12 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                         "Barcode": "",
                         "AcceptedDate": "",
                         "QuantityReceived": "",
+                        "POS": "",
                         "Vendor": "",
-                        "ProductType": ""
+                        "StrainName": "",
+                        "ProductType": "",
+                        "THCContent": "",
+                        "CBDContent": "",
                     }
 
                 # Render template with context
@@ -1858,6 +1872,7 @@ def _init_empty_pos_fields_on_products(products: list) -> None:
         p["pos_matched"] = False
         p["pos_match_kind"] = "none"
         p["pos_menu_quantity"] = ""
+        p["pos_menu_quantity_raw"] = ""
 
 
 def _apply_row_selected_defaults(products: list, pos_cfg: dict, posabit_selected: str, posabit_error, posabit_match_summary: dict) -> None:
@@ -1980,9 +1995,11 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
             p["pos_description"] = (disp or "") if ok else ""
             p["pos_matched"] = bool(ok)
             p["pos_match_kind"] = kind
-            p["pos_menu_quantity"] = (
-                normalize_pos_menu_qty_cell(mq) if ok else ""
-            )
+            raw_mq = ""
+            if ok and mq is not None and str(mq).strip() != "":
+                raw_mq = str(mq).strip()
+            p["pos_menu_quantity_raw"] = raw_mq
+            p["pos_menu_quantity"] = normalize_pos_menu_qty_cell(mq) if ok else ""
             if ok:
                 posabit_match_summary["matched"] += 1
             else:
@@ -2010,6 +2027,96 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
     return posabit_menu_rows, posabit_error, posabit_match_summary
 
 
+def _session_df_fingerprint(df_json_str: Optional[str]) -> str:
+    """Stable short id for the current session dataset (for POS qty cache invalidation)."""
+    if not df_json_str:
+        return ""
+    return hashlib.blake2s(df_json_str.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _pos_qty_cache_key_for_index(idx) -> str:
+    try:
+        return str(int(idx))
+    except (TypeError, ValueError):
+        return str(idx)
+
+
+def _persist_pos_qty_to_session(products: list, venue_id: str, df_json_str: Optional[str]) -> None:
+    """Store POS menu qty per Data View row id so slip generation can skip a menu refetch."""
+    fp = _session_df_fingerprint(df_json_str or "")
+    if not fp or not products:
+        return
+    venue = (venue_id or "").strip().lower()
+    new_pairs = {
+        _pos_qty_cache_key_for_index(p["id"]): normalize_pos_menu_qty_cell(p.get("pos_menu_quantity"))
+        for p in products
+    }
+    new_raw = {
+        _pos_qty_cache_key_for_index(p["id"]): str(p.get("pos_menu_quantity_raw") or "").strip()
+        for p in products
+    }
+    prev_fp = session.get("pos_qty_cache_fp")
+    prev_venue = session.get("pos_qty_cache_venue", "")
+    if prev_fp == fp and prev_venue == venue and session.get("pos_qty_by_index"):
+        merged = dict(session["pos_qty_by_index"])
+        merged.update(new_pairs)
+        by_id = merged
+        merged_raw = dict(session.get("pos_qty_raw_by_index") or {})
+        merged_raw.update(new_raw)
+        by_raw = merged_raw
+    else:
+        by_id = new_pairs
+        by_raw = new_raw
+    session["pos_qty_by_index"] = by_id
+    session["pos_qty_raw_by_index"] = by_raw
+    session["pos_qty_cache_fp"] = fp
+    session["pos_qty_cache_venue"] = venue
+    logger.info("POS qty session cache updated (%d keys, fp=%s…)", len(by_id), fp[:12])
+
+
+def _clear_pos_qty_session_cache() -> None:
+    session.pop("pos_qty_by_index", None)
+    session.pop("pos_qty_raw_by_index", None)
+    session.pop("pos_qty_cache_fp", None)
+    session.pop("pos_qty_cache_venue", None)
+
+
+def _try_pos_qty_from_session_cache(selected_df, venue_id: str, df_json_str: Optional[str]):
+    """If Data View already computed POS matches for this dataset + venue, reuse (no API)."""
+    fp = _session_df_fingerprint(df_json_str or "")
+    venue = (venue_id or "").strip().lower()
+    if (
+        not fp
+        or not venue
+        or session.get("pos_qty_cache_fp") != fp
+        or session.get("pos_qty_cache_venue", "") != venue
+    ):
+        return None
+    cache = session.get("pos_qty_by_index") or {}
+    if not cache:
+        return None
+    cache_raw = session.get("pos_qty_raw_by_index") or {}
+    col = []
+    col_raw = []
+    for idx in selected_df.index:
+        key = _pos_qty_cache_key_for_index(idx)
+        if key not in cache:
+            return None
+        col.append(cache[key])
+        col_raw.append(str(cache_raw.get(key) or "").strip())
+    if len(col) != len(selected_df):
+        return None
+    logger.info(
+        "POS qty for generation: using session cache (%d rows, fp=%s…); skipping menu fetch.",
+        len(col),
+        fp[:12],
+    )
+    out = selected_df.copy()
+    out["POS Quantity"] = col
+    out["POS Quantity Raw"] = col_raw
+    return out
+
+
 def _inject_pos_quantity_for_generation(selected_df):
     """Add 'POS Quantity' column to selected_df for DOCX merge fields (best-effort)."""
     try:
@@ -2019,12 +2126,18 @@ def _inject_pos_quantity_for_generation(selected_df):
         venues = pos_cfg.get("venues") or []
         if not pos_cfg.get("enabled") or not venues:
             selected_df["POS Quantity"] = ""
+            selected_df["POS Quantity Raw"] = ""
             return selected_df
         posabit_selected = (session.get("posabit_venue") or "").strip().lower()
         if posabit_selected and not any(v["id"] == posabit_selected for v in venues):
             posabit_selected = ""
         if not posabit_selected:
             posabit_selected = venues[0]["id"]
+
+        raw = get_chunked_data("df_json")
+        cached = _try_pos_qty_from_session_cache(selected_df, posabit_selected, raw)
+        if cached is not None:
+            return cached
 
         products = []
         for i, (_, row) in enumerate(selected_df.iterrows()):
@@ -2039,12 +2152,26 @@ def _inject_pos_quantity_for_generation(selected_df):
         _init_empty_pos_fields_on_products(products)
         _, _, _ = _perform_pos_matching_on_products(products, pos_cfg, posabit_selected)
         pos_qty = [normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")) for p in products]
+        pos_raw = [str(p.get("pos_menu_quantity_raw") or "").strip() for p in products]
         selected_df = selected_df.copy()
         selected_df["POS Quantity"] = pos_qty
+        selected_df["POS Quantity Raw"] = pos_raw
+        # Align cache keys with Data View (dataframe index labels) for next generation.
+        sync_products = []
+        for p, (idx, _) in zip(products, selected_df.iterrows()):
+            sync_products.append(
+                {
+                    "id": idx,
+                    "pos_menu_quantity": normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")),
+                    "pos_menu_quantity_raw": str(p.get("pos_menu_quantity_raw") or "").strip(),
+                }
+            )
+        _persist_pos_qty_to_session(sync_products, posabit_selected, raw)
         return selected_df
     except Exception as e:
         logger.warning("POS quantity enrichment for generation failed: %s", e, exc_info=True)
         selected_df["POS Quantity"] = ""
+        selected_df["POS Quantity Raw"] = ""
         return selected_df
 
 
@@ -2074,6 +2201,7 @@ def api_data_view_pos_matches():
         session["posabit_venue"] = posabit_selected
 
     if not pos_cfg.get("enabled") or not posabit_selected:
+        _clear_pos_qty_session_cache()
         rows = [
             {
                 "id": int(p["id"]),
@@ -2115,6 +2243,8 @@ def api_data_view_pos_matches():
         update_session_activity()
     except Exception as e:
         logger.warning("session activity ping on pos-matches api: %s", e)
+
+    _persist_pos_qty_to_session(products, posabit_selected, df_json)
 
     return jsonify(
         {
@@ -2321,6 +2451,9 @@ def data_view():
             update_session_activity()
         except Exception as e:
             logger.warning(f"Failed to update session activity on data_view: {e}")
+
+        if pos_cfg.get("enabled") and posabit_selected and not posabit_loading and products:
+            _persist_pos_qty_to_session(products, posabit_selected, get_chunked_data("df_json"))
 
         return render_template(
             'data_view.html',
@@ -3099,7 +3232,8 @@ def clear_data():
         # Clear all chunked data
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
-        
+        _clear_pos_qty_session_cache()
+
         # Clear other session data
         session.pop('format_type', None)
         

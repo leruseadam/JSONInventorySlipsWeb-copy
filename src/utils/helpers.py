@@ -9,7 +9,7 @@ from docxtpl import DocxTemplate
 import datetime
 from collections import deque
 
-from src.utils.posabit_menu import normalize_pos_menu_qty_cell
+from src.utils.posabit_menu import format_old_units_remaining_for_slip, normalize_pos_menu_qty_cell
 
 def chunk_records(records, chunk_size=4):
     """Split records into chunks of specified size"""
@@ -165,6 +165,9 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         # Progress calculation
         current_chunk = 0
 
+        # One template load for all pages (DocxTemplate can render repeatedly to a buffer).
+        tpl = DocxTemplate(template_path)
+
         # Build pages by pulling one item per slot per page (if available)
         for page_idx in range(total_pages):
             current_chunk += 1
@@ -176,7 +179,6 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                 status_callback(f"Generating page {current_chunk} of {total_pages}...")
 
             try:
-                tpl = DocxTemplate(template_path)
                 context = {}
 
                 # For each slot index, pop next record if available
@@ -201,7 +203,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                             "Barcode": barcode,
                             "AcceptedDate": rec.get("Accepted Date", ""),
                             "QuantityReceived": qty,
-                            "POS": normalize_pos_menu_qty_cell(rec.get("POS Quantity")),
+                            "POS": format_old_units_remaining_for_slip(rec),
                             "Vendor": rec.get("Vendor", ""),
                             "StrainName": rec.get("Strain Name", ""),
                             "ProductType": rec.get("Product Type*", rec.get("Inventory Type", "")),
