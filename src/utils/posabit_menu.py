@@ -282,13 +282,27 @@ def _format_menu_qty(raw: Any) -> str:
 
 def _extract_menu_quantity(d: Dict[str, Any]) -> str:
     """Best-effort qty from menu_item or inventory API objects (field names vary)."""
+    if not isinstance(d, dict):
+        return ""
     for k in (
         "quantity",
         "qty",
         "inventory_quantity",
         "inventoryQuantity",
+        "inventory_count",
+        "inventoryCount",
+        "sellable_quantity",
+        "sellableQuantity",
+        "sellable_qty",
+        "available_to_sell",
+        "quantity_available",
+        "quantityAvailable",
         "on_hand",
         "onHand",
+        "on_hand_quantity",
+        "on_hand_qty",
+        "qty_on_hand",
+        "qtyOnHand",
         "stock",
         "available_quantity",
         "availableQuantity",
@@ -297,6 +311,10 @@ def _extract_menu_quantity(d: Dict[str, Any]) -> str:
         "remaining_quantity",
         "par_level",
         "units_available",
+        "grams_available",
+        "total_available_units",
+        "case_quantity",
+        "warehouse_quantity",
     ):
         if k not in d:
             continue
@@ -304,9 +322,41 @@ def _extract_menu_quantity(d: Dict[str, Any]) -> str:
         if v is None or (isinstance(v, str) and not v.strip()):
             continue
         return _format_menu_qty(v)
-    nested = d.get("inventory")
-    if isinstance(nested, dict):
-        return _extract_menu_quantity(nested)
+    for nested_key in ("inventory", "inventory_info", "stock", "counts", "availability"):
+        nested = d.get(nested_key)
+        if isinstance(nested, dict):
+            q = _extract_menu_quantity(nested)
+            if q:
+                return q
+        elif isinstance(nested, list) and nested and isinstance(nested[0], dict):
+            q = _extract_menu_quantity(nested[0])
+            if q:
+                return q
+    # Last resort: any scalar field whose key suggests quantity
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        kl = k.lower()
+        if v is None or isinstance(v, (dict, list, bool)):
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        if any(
+            fragment in kl
+            for fragment in (
+                "quantity",
+                "qty",
+                "stock",
+                "available",
+                "onhand",
+                "on_hand",
+                "sellable",
+                "inventorycount",
+                "remaining",
+                "units",
+            )
+        ):
+            return _format_menu_qty(v)
     return ""
 
 
@@ -533,6 +583,8 @@ def build_match_index(
                 continue
             if n not in norm_to_display:
                 norm_to_display[n] = row["display"] or c
+                norm_to_qty[n] = mq
+            elif mq and not str(norm_to_qty.get(n, "")).strip():
                 norm_to_qty[n] = mq
     return norm_to_display, norm_to_qty, list(norm_to_display.keys())
 

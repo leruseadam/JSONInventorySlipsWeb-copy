@@ -1826,6 +1826,260 @@ def _posabit_data_view_fetch_timeout_sec() -> float:
         return 55.0
 
 
+def _posabit_defer_data_view_matching() -> bool:
+    """When true (default), /data-view returns immediately and POS fills in via /api/… (avoids gateway timeouts)."""
+    return (
+        os.environ.get("POSABIT_DATA_VIEW_DEFER_MATCHING", "true").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+
+def _incoming_qty_float_dataview(val):
+    try:
+        s = str(val if val is not None else "").strip().replace(",", "")
+        if not s:
+            return None
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _init_empty_pos_fields_on_products(products: list) -> None:
+    for p in products:
+        p["pos_description"] = ""
+        p["pos_matched"] = False
+        p["pos_match_kind"] = "none"
+        p["pos_menu_quantity"] = ""
+
+
+def _apply_row_selected_defaults(products: list, pos_cfg: dict, posabit_selected: str, posabit_error, posabit_match_summary: dict) -> None:
+    pos_match_ready = (
+        pos_cfg["enabled"]
+        and bool(posabit_selected)
+        and not posabit_match_summary.get("disabled")
+        and posabit_error is None
+    )
+    for p in products:
+        if not pos_match_ready:
+            p["row_selected_default"] = True
+            continue
+        qn = _incoming_qty_float_dataview(p.get("quantity"))
+        low_qty = qn is not None and qn <= 10.0
+        not_in_menu = not p.get("pos_matched")
+        p["row_selected_default"] = not (not_in_menu and low_qty)
+
+
+def _excel_products_for_data_view(df) -> list:
+    excel_products = []
+    excel_df_json = get_chunked_data("excel_df")
+    if not excel_df_json or not session.get("has_excel_data"):
+        return excel_products
+    try:
+        excel_df = _df_from_session_json(excel_df_json)
+        for i, (idx, row) in enumerate(excel_df.iterrows()):
+            try:
+                pid = int(len(df)) + int(idx)
+            except (TypeError, ValueError):
+                pid = int(len(df)) + i
+            excel_products.append(
+                {
+                    "id": pid,
+                    "name": str(row.get("product_name", "")),
+                    "strain": str(row.get("strain_name", "")),
+                    "sku": str(row.get("sku", "") or row.get("barcode", "")),
+                    "quantity": str(row.get("quantity", "0")),
+                    "source": "Excel Upload",
+                    "vendor": str(row.get("vendor", "Unknown")),
+                    "manifest_id": str(row.get("sku", "N/A")),
+                    "accepted_date": str(row.get("accepted_date", "N/A")),
+                    "type": str(row.get("product_type", "Unknown")),
+                    "cost": float(row.get("price", 0)) if "price" in row else 0,
+                    "brand": str(row.get("brand", "")),
+                    "weight": str(row.get("weight", "")),
+                    "weight_unit": str(row.get("weight_unit", "")),
+                }
+            )
+    except Exception as e:
+        logger.error("Excel merge for Data View failed: %s", e)
+    return excel_products
+
+
+def _main_json_products_for_data_view(df, format_type):
+    products = []
+    for idx, row in df.iterrows():
+        try:
+            pid = int(idx)
+        except (TypeError, ValueError):
+            pid = len(products)
+        products.append(
+            {
+                "id": pid,
+                "name": str(row.get("Product Name*", "")),
+                "strain": str(row.get("Strain Name", "")),
+                "sku": str(row.get("Barcode*", "")),
+                "quantity": str(row.get("Quantity Received*", "")),
+                "source": format_type or "Unknown",
+                "vendor": str(row.get("Vendor", "Unknown")),
+                "manifest_id": str(row.get("Barcode*", "N/A")),
+                "accepted_date": str(row.get("Accepted Date", "N/A")),
+                "type": str(row.get("Product Type*", "Unknown")),
+                "cost": float(row.get("Cost", 0)) if "Cost" in row else 0,
+            }
+        )
+    return products
+
+
+def _assemble_data_view_products(df, format_type) -> list:
+    products = _main_json_products_for_data_view(df, format_type)
+    products.extend(_excel_products_for_data_view(df))
+    return products
+
+
+def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_selected: str):
+    """Returns (menu_rows, posabit_error_or_none, posabit_match_summary). Mutates ``products`` in place."""
+    posabit_menu_rows: list = []
+    posabit_error = None
+    posabit_match_summary = {"matched": 0, "unmatched": 0, "disabled": False}
+    venue = next(
+        (v for v in (pos_cfg.get("venues") or []) if v["id"] == posabit_selected),
+        (pos_cfg.get("venues") or [None])[0],
+    )
+    cache_key = f"{venue['feed_key'][:8]}:{venue['id']}"
+    try:
+        timeout_sec = _posabit_data_view_fetch_timeout_sec()
+
+        def _fetch_pos_menu_rows():
+            return get_menu_rows_cached(
+                pos_cfg["api_base"],
+                pos_cfg["token"],
+                venue["feed_key"],
+                cache_key,
+                for_data_view=True,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(_fetch_pos_menu_rows)
+            posabit_menu_rows = fut.result(timeout=timeout_sec)
+        norm_map, norm_qty, norm_keys = build_match_index(posabit_menu_rows)
+        for p in products:
+            ok, disp, kind, mq = find_pos_menu_match(p.get("name") or "", norm_map, norm_qty, norm_keys)
+            if not ok:
+                sku_val = p.get("sku")
+                if sku_val is not None and str(sku_val).strip():
+                    ok, disp, kind, mq = find_pos_menu_match(str(sku_val).strip(), norm_map, norm_qty, norm_keys)
+                    if ok:
+                        kind = f"sku:{kind}"
+            p["pos_description"] = (disp or "") if ok else ""
+            p["pos_matched"] = bool(ok)
+            p["pos_match_kind"] = kind
+            p["pos_menu_quantity"] = mq if ok else ""
+            if ok:
+                posabit_match_summary["matched"] += 1
+            else:
+                posabit_match_summary["unmatched"] += 1
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "POSaBit fetch exceeded %.0fs (POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC); deferred client may retry.",
+            timeout_sec,
+        )
+        posabit_error = (
+            f"POSaBit did not finish within {timeout_sec:.0f}s (menu and optional inventory). "
+            "Increase POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC or POSABIT_REQUEST_TIMEOUT in .env, "
+            "or set POSABIT_FALLBACK_TO_VENUE_INVENTORY=0 if inventory paging is slow."
+        )
+        posabit_menu_rows = []
+        _init_empty_pos_fields_on_products(products)
+        posabit_match_summary["unmatched"] = len(products)
+    except Exception as e:
+        logger.warning("POSaBit menu fetch failed: %s", e, exc_info=True)
+        posabit_error = str(e)
+        posabit_menu_rows = []
+        _init_empty_pos_fields_on_products(products)
+        posabit_match_summary["unmatched"] = len(products)
+
+    return posabit_menu_rows, posabit_error, posabit_match_summary
+
+
+@app.route("/api/data-view/pos-matches", methods=["GET"])
+def api_data_view_pos_matches():
+    """Loads POS catalog + fills match fields after the shell page has rendered."""
+    df_json = get_chunked_data("df_json")
+    format_type = session.get("format_type")
+    if df_json is None:
+        return jsonify({"success": False, "error": "no_data", "message": "Load data first."}), 400
+    try:
+        df = _df_from_session_json(df_json)
+    except Exception:
+        return jsonify({"success": False, "error": "bad_data"}), 400
+
+    products = _assemble_data_view_products(df, format_type)
+    pos_cfg = posabit_config_from_env()
+    posabit_venues = pos_cfg.get("venues") or []
+    arg_venue = (request.args.get("venue") or "").strip().lower()
+    if arg_venue and any(v["id"] == arg_venue for v in posabit_venues):
+        session["posabit_venue"] = arg_venue
+    posabit_selected = (session.get("posabit_venue") or "").strip().lower()
+    if posabit_selected and not any(v["id"] == posabit_selected for v in posabit_venues):
+        posabit_selected = ""
+    if not posabit_selected and posabit_venues:
+        posabit_selected = posabit_venues[0]["id"]
+        session["posabit_venue"] = posabit_selected
+
+    if not pos_cfg.get("enabled") or not posabit_selected:
+        rows = [
+            {
+                "id": int(p["id"]),
+                "pos_description": "",
+                "pos_matched": False,
+                "pos_match_kind": "disabled",
+                "pos_menu_quantity": "",
+                "row_selected_default": True,
+            }
+            for p in products
+        ]
+        return jsonify(
+            {
+                "success": True,
+                "pos_disabled": True,
+                "summary": {"matched": 0, "unmatched": len(products), "disabled": True},
+                "menu_rows": 0,
+                "error": None,
+                "rows": rows,
+            }
+        )
+
+    _init_empty_pos_fields_on_products(products)
+    menu_rows, pos_err, summary = _perform_pos_matching_on_products(products, pos_cfg, posabit_selected)
+    _apply_row_selected_defaults(products, pos_cfg, posabit_selected, pos_err, summary)
+
+    out_rows = [
+        {
+            "id": int(p["id"]),
+            "pos_description": p.get("pos_description") or "",
+            "pos_matched": bool(p.get("pos_matched")),
+            "pos_match_kind": p.get("pos_match_kind") or "none",
+            "pos_menu_quantity": str(p.get("pos_menu_quantity") or "").strip(),
+            "row_selected_default": bool(p.get("row_selected_default", True)),
+        }
+        for p in products
+    ]
+    try:
+        update_session_activity()
+    except Exception as e:
+        logger.warning("session activity ping on pos-matches api: %s", e)
+
+    return jsonify(
+        {
+            "success": True,
+            "pos_disabled": False,
+            "summary": summary,
+            "menu_rows": len(menu_rows),
+            "error": pos_err,
+            "rows": out_rows,
+        }
+    )
+
+
 @app.route('/data-view')
 def data_view():
     try:
@@ -1876,63 +2130,10 @@ def data_view():
                 logger.info(f"Accepted Date: {transfer_info['accepted_date']}")
         
         logger.info(f"Final transfer info: {transfer_info}")
-        
-        # Check if there's Excel data to merge
-        excel_df_json = get_chunked_data('excel_df')
-        excel_products = []
-        
-        if excel_df_json and session.get('has_excel_data'):
-            try:
-                excel_df = _df_from_session_json(excel_df_json)
-                
-                logger.info(f"Found Excel data with {len(excel_df)} products")
-                
-                # Convert Excel data to product format
-                for idx, row in excel_df.iterrows():
-                    product = {
-                        'id': len(df) + idx,  # Offset ID to avoid conflicts
-                        'name': str(row.get('product_name', '')),
-                        'strain': str(row.get('strain_name', '')),
-                        'sku': str(row.get('sku', '') or row.get('barcode', '')),
-                        'quantity': str(row.get('quantity', '0')),
-                        'source': 'Excel Upload',
-                        'vendor': str(row.get('vendor', 'Unknown')),
-                        'manifest_id': str(row.get('sku', 'N/A')),
-                        'accepted_date': str(row.get('accepted_date', 'N/A')),
-                        'type': str(row.get('product_type', 'Unknown')),
-                        'cost': float(row.get('price', 0)) if 'price' in row else 0,
-                        'brand': str(row.get('brand', '')),
-                        'weight': str(row.get('weight', '')),
-                        'weight_unit': str(row.get('weight_unit', ''))
-                    }
-                    excel_products.append(product)
-                
-                logger.info(f"Added {len(excel_products)} products from Excel")
-            except Exception as e:
-                logger.error(f"Error processing Excel data for display: {e}")
-        
-        # Format data for template
-        products = []
-        for idx, row in df.iterrows():
-            product = {
-                'id': idx,
-                'name': str(row.get('Product Name*', '')),
-                'strain': str(row.get('Strain Name', '')),
-                'sku': str(row.get('Barcode*', '')),
-                'quantity': str(row.get('Quantity Received*', '')),
-                'source': format_type or 'Unknown',
-                'vendor': str(row.get('Vendor', 'Unknown')),
-                'manifest_id': str(row.get('Barcode*', 'N/A')),
-                'accepted_date': str(row.get('Accepted Date', 'N/A')),
-                'type': str(row.get('Product Type*', 'Unknown')),
-                'cost': float(row.get('Cost', 0)) if 'Cost' in row else 0
-            }
-            products.append(product)
-        
-        # Merge Excel products with JSON products
-        products.extend(excel_products)
 
-        # POSaBit menu: match imported names to store menu (optional, from .env)
+        products = _assemble_data_view_products(df, format_type)
+
+        # POSaBit menu: optional; defer matching to API so the shell renders immediately
         pos_cfg = posabit_config_from_env()
         posabit_venues = pos_cfg.get('venues') or []
         arg_venue = (request.args.get('venue') or '').strip().lower()
@@ -1946,103 +2147,33 @@ def data_view():
             session['posabit_venue'] = posabit_selected
         posabit_menu_rows: list = []
         posabit_error = None
-        posabit_match_summary = {'matched': 0, 'unmatched': 0, 'disabled': True}
+        posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': True}
+        posabit_loading = False
 
         if pos_cfg['enabled'] and posabit_selected:
-            posabit_match_summary['disabled'] = False
-            venue = next((v for v in posabit_venues if v['id'] == posabit_selected), posabit_venues[0])
-            cache_key = f"{venue['feed_key'][:8]}:{venue['id']}"
-            try:
-                timeout_sec = _posabit_data_view_fetch_timeout_sec()
-                def _fetch_pos_menu_rows():
-                    return get_menu_rows_cached(
-                        pos_cfg['api_base'],
-                        pos_cfg['token'],
-                        venue['feed_key'],
-                        cache_key,
-                        for_data_view=True,
-                    )
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(_fetch_pos_menu_rows)
-                    posabit_menu_rows = fut.result(timeout=timeout_sec)
-                norm_map, norm_qty, norm_keys = build_match_index(posabit_menu_rows)
+            if _posabit_defer_data_view_matching():
+                posabit_loading = True
+                posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
+                _init_empty_pos_fields_on_products(products)
                 for p in products:
-                    ok, disp, kind, mq = find_pos_menu_match(
-                        p.get('name') or '', norm_map, norm_qty, norm_keys
-                    )
-                    if not ok:
-                        sku_val = p.get('sku')
-                        if sku_val is not None and str(sku_val).strip():
-                            ok, disp, kind, mq = find_pos_menu_match(
-                                str(sku_val).strip(), norm_map, norm_qty, norm_keys
-                            )
-                            if ok:
-                                kind = f"sku:{kind}"
-                    p['pos_description'] = (disp or '') if ok else ''
-                    p['pos_matched'] = bool(ok)
-                    p['pos_match_kind'] = kind
-                    p['pos_menu_quantity'] = mq if ok else ''
-                    if ok:
-                        posabit_match_summary['matched'] += 1
-                    else:
-                        posabit_match_summary['unmatched'] += 1
-            except concurrent.futures.TimeoutError:
-                logger.warning(
-                    'POSaBit fetch exceeded %.0fs (POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC); page loads without menu.',
-                    timeout_sec,
+                    p['row_selected_default'] = True
+            else:
+                posabit_match_summary['disabled'] = False
+                posabit_menu_rows, posabit_error, posabit_match_summary = _perform_pos_matching_on_products(
+                    products, pos_cfg, posabit_selected
                 )
-                posabit_error = (
-                    f"POSaBit did not finish within {timeout_sec:.0f}s (menu and optional inventory). "
-                    "Increase POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC or POSABIT_REQUEST_TIMEOUT in .env, "
-                    "or set POSABIT_FALLBACK_TO_VENUE_INVENTORY=0 if inventory paging is slow."
+                _apply_row_selected_defaults(
+                    products, pos_cfg, posabit_selected, posabit_error, posabit_match_summary
                 )
-                posabit_menu_rows = []
-                for p in products:
-                    p['pos_description'] = ''
-                    p['pos_matched'] = False
-                    p['pos_match_kind'] = 'none'
-                    p['pos_menu_quantity'] = ''
-                posabit_match_summary['unmatched'] = len(products)
-            except Exception as e:
-                logger.warning('POSaBit menu fetch failed: %s', e, exc_info=True)
-                posabit_error = str(e)
-                for p in products:
-                    p['pos_description'] = ''
-                    p['pos_matched'] = False
-                    p['pos_match_kind'] = 'none'
-                    p['pos_menu_quantity'] = ''
-                posabit_match_summary['unmatched'] = len(products)
         else:
             for p in products:
                 p['pos_description'] = ''
                 p['pos_matched'] = False
                 p['pos_match_kind'] = 'disabled'
                 p['pos_menu_quantity'] = ''
-
-        def _incoming_qty_float(val):
-            try:
-                s = str(val if val is not None else '').strip().replace(',', '')
-                if not s:
-                    return None
-                return float(s)
-            except ValueError:
-                return None
-
-        pos_match_ready = (
-            pos_cfg['enabled']
-            and bool(posabit_selected)
-            and not posabit_match_summary.get('disabled')
-            and posabit_error is None
-        )
-        for p in products:
-            if not pos_match_ready:
-                p['row_selected_default'] = True
-                continue
-            qn = _incoming_qty_float(p.get('quantity'))
-            low_qty = qn is not None and qn <= 10.0
-            not_in_menu = not p.get('pos_matched')
-            p['row_selected_default'] = not (not_in_menu and low_qty)
+            _apply_row_selected_defaults(
+                products, pos_cfg, posabit_selected or '', posabit_error, {'disabled': True}
+            )
 
         # Smart grouping by similar product terms, then alphabetical
         def create_smart_groups(products):
@@ -2123,6 +2254,7 @@ def data_view():
             pos_cfg['enabled']
             and posabit_selected
             and not posabit_match_summary.get('disabled')
+            and not posabit_loading
         )
         if show_pos_menu_order:
             matched_products = [p for p in products if p.get('pos_matched')]
@@ -2158,6 +2290,7 @@ def data_view():
             posabit_menu_rows=posabit_menu_rows,
             posabit_error=posabit_error,
             posabit_match_summary=posabit_match_summary,
+            posabit_loading=posabit_loading,
         )
     except Exception as e:
         logger.error(f'Error in data_view: {str(e)}', exc_info=True)

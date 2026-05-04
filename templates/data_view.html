@@ -109,6 +109,7 @@
   {% set posabit_match_summary = posabit_match_summary|default({'matched': 0, 'unmatched': 0, 'disabled': true}) %}
   {% set posabit_disabled_reasons = posabit_disabled_reasons|default([]) %}
   {% set posabit_env_file = posabit_env_file|default('') %}
+  {% set posabit_loading = posabit_loading|default(false) %}
 
   {% if not posabit_enabled %}
   <div class="row mb-3">
@@ -148,14 +149,21 @@
           {% if posabit_error %}
           <div class="alert alert-warning py-2 mb-2"><i class="fas fa-exclamation-triangle"></i> Could not load POS menu: {{ posabit_error }}</div>
           {% elif not posabit_match_summary.disabled %}
-          <p class="mb-2 small text-muted">
+          {% if posabit_loading %}
+          <div id="posabit-async-banner" class="alert alert-info py-2 small d-flex align-items-center gap-2 mb-2">
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span>Loading POS menu and matches in the background. The page is ready — table cells fill in automatically.</span>
+          </div>
+          {% else %}
+          <p class="mb-2 small text-muted" id="posabit-sync-summary">
             <strong>{{ posabit_menu_rows|length }}</strong> products on the live menu.
             Imported rows: <span class="text-success">{{ posabit_match_summary.matched }} in menu</span>,
             <span class="text-warning">{{ posabit_match_summary.unmatched }} no match</span>.
             <strong>Description</strong> shows the POS product name when a match is found (same row as your JSON product name).
             Rows <strong>in the POS menu</strong> are highlighted and listed first; <strong>POS menu qty</strong> is on-hand from POSaBit when the API provides it.
           </p>
-          {% if posabit_menu_rows|length == 0 %}
+          {% endif %}
+          {% if not posabit_loading and posabit_menu_rows|length == 0 %}
           <div class="alert alert-warning py-2 mb-2 small">
             The API responded but returned <strong>no menu items</strong>. Check the Flask terminal for <code>POSaBit menu_feed has 0 products</code>.
             If <code>POSABIT_USE_VENUE_INVENTORIES=1</code> and <code>POSABIT_FALLBACK_TO_VENUE_INVENTORY=1</code>, the app should load <strong>venue inventory SKUs</strong> when the public menu feed is empty—check the Flask log for <code>loaded … inventory SKUs</code>.
@@ -313,11 +321,11 @@
                                                                                     </span>
                                                                                 </td>
                                                                                 {% if posabit_enabled %}
-                                                                                <td>
+                                                                                <td class="pos-menu-status-cell">
                                                                                     {% if product.pos_matched %}
-                                                                                    <span class="badge bg-success" title="Match: {{ product.pos_match_kind|default('') }}">In menu</span>
+                                                                                    <span class="badge bg-success pos-menu-status-badge" title="Match: {{ product.pos_match_kind|default('') }}">In menu</span>
                                                                                     {% else %}
-                                                                                    <span class="badge bg-secondary" title="No confident match in POS menu">Not in menu</span>
+                                                                                    <span class="badge bg-secondary pos-menu-status-badge" title="No confident match in POS menu">Not in menu</span>
                                                                                     {% endif %}
                                                                                 </td>
                                                                                 {% endif %}
@@ -414,6 +422,111 @@
 <script>
 const GROUP_COLSPAN = {{ 9 if (posabit_enabled|default(false)) else 6 }};
 const POSABIT_ENABLED = {{ (posabit_enabled|default(false))|tojson }};
+const POS_DEFER_MATCH_FETCH = {{ (posabit_loading|default(false))|tojson }};
+const POS_MATCHES_URL = {{ url_for('api_data_view_pos_matches')|tojson }};
+
+function escapeHtmlPos(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function renderPosBadgeCell(td, matched, matchKind) {
+  if (!td) return;
+  while (td.firstChild) td.removeChild(td.firstChild);
+  var s = document.createElement('span');
+  s.className = matched ? 'badge bg-success pos-menu-status-badge' : 'badge bg-secondary pos-menu-status-badge';
+  s.textContent = matched ? 'In menu' : 'Not in menu';
+  s.title = matched ? ('Match: ' + String(matchKind || '')) : 'No confident match in POS menu';
+  td.appendChild(s);
+}
+
+function applyDeferredPosMatches(data) {
+  if (!POSABIT_ENABLED || !POS_DEFER_MATCH_FETCH) return;
+  var banner = document.getElementById('posabit-async-banner');
+  if (!data || !data.success) {
+    if (banner) {
+      banner.className = 'alert alert-warning py-2 mb-2 small';
+      banner.textContent = (data && (data.message || data.error)) ? String(data.message || data.error) : 'Could not load POS matches.';
+    }
+    return;
+  }
+  if (data.pos_disabled) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (banner) banner.remove();
+
+  var cardBodies = document.querySelectorAll('.data-view .card.border-info .card-body');
+  var cb = cardBodies.length ? cardBodies[0] : null;
+  var existing = document.getElementById('posabit-sync-summary');
+  var p = existing || document.createElement('p');
+  if (!existing && cb) {
+    p.className = 'mb-2 small text-muted';
+    p.id = 'posabit-sync-summary';
+    cb.insertBefore(p, cb.firstChild);
+  }
+  var sm = data.summary || {};
+  var menuN = typeof data.menu_rows === 'number' ? data.menu_rows : 0;
+  if (data.error && cb) {
+    var warn = document.createElement('div');
+    warn.className = 'alert alert-warning py-2 mb-2 small';
+    warn.setAttribute('role', 'alert');
+    warn.textContent = String(data.error);
+    cb.insertBefore(warn, p && p.parentNode === cb ? p : cb.firstChild);
+  } else if (p) {
+    p.innerHTML = '<strong>' + menuN + '</strong> products on the live menu. Imported: ' +
+      '<span class="text-success">' + (sm.matched || 0) + ' in menu</span>, ' +
+      '<span class="text-warning">' + (sm.unmatched || 0) + ' no match</span>. ' +
+      '<span class="text-muted">Reload Data View once to open the expandable POS preview list.</span>';
+  }
+
+  (data.rows || []).forEach(function (row) {
+    var tr = document.querySelector('#productsTableBody tr.group-product-row[data-index="' + row.id + '"]');
+    if (!tr) return;
+
+    var descTd = tr.querySelector('.pos-desc-cell');
+    if (descTd) {
+      descTd.innerHTML = row.pos_description
+        ? '<span title="Matched POS menu name">' + escapeHtmlPos(row.pos_description) + '</span>'
+        : '<span class="text-muted">—</span>';
+    }
+
+    var qtyTd = tr.querySelector('.pos-menu-qty-cell');
+    if (qtyTd) {
+      if (row.pos_matched && row.pos_menu_quantity) {
+        qtyTd.innerHTML = '<span class="text-success fw-semibold">' + escapeHtmlPos(row.pos_menu_quantity) + '</span>';
+      } else {
+        qtyTd.innerHTML = '<span class="text-muted">—</span>';
+      }
+    }
+
+    renderPosBadgeCell(tr.querySelector('.pos-menu-status-cell'), !!row.pos_matched, row.pos_match_kind);
+
+    if (row.pos_matched) tr.classList.add('pos-in-menu-row');
+    else tr.classList.remove('pos-in-menu-row');
+
+    var cbIn = tr.querySelector('.product-checkbox');
+    if (cbIn) cbIn.checked = !!row.row_selected_default;
+  });
+}
+
+function fetchDeferredPosMatches() {
+  fetch(POS_MATCHES_URL + window.location.search, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    .then(function (r) {
+      if (!r.ok) return { success: false, message: 'HTTP ' + r.status };
+      return r.json();
+    })
+    .then(applyDeferredPosMatches)
+    .catch(function () {
+      var bn = document.getElementById('posabit-async-banner');
+      if (bn) {
+        bn.className = 'alert alert-warning py-2 mb-2 small';
+        bn.textContent = 'Network error loading POS matches. Refresh the page.';
+      }
+    });
+}
 let progressModal;
 let mainProgressBarEl, progressPhaseEl, progressPercentEl, statusChecklistEl;
 let progressBar;
@@ -487,6 +600,10 @@ document.addEventListener('DOMContentLoaded', function() {
         row.addEventListener('drop', handleDrop);
         row.addEventListener('dragend', handleDragEnd);
     });
+
+    if (POS_DEFER_MATCH_FETCH && POSABIT_ENABLED) {
+        fetchDeferredPosMatches();
+    }
 });
 
 // Ensure modal and references are ready when user clicks generate
