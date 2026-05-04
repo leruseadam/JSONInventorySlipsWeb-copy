@@ -61,10 +61,10 @@ def _inventory_effective_max_pages(data_view: bool) -> int:
     if not data_view:
         return max_pages
     try:
-        cap = int(os.environ.get("POSABIT_DATA_VIEW_INVENTORY_MAX_PAGES") or "22")
+        cap = int(os.environ.get("POSABIT_DATA_VIEW_INVENTORY_MAX_PAGES") or "12")
         cap = min(max(cap, 1), 500)
     except ValueError:
-        cap = 22
+        cap = 12
     return min(max_pages, cap)
 
 

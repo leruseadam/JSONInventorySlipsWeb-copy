@@ -213,14 +213,25 @@ from src.ui.app import InventorySlipGenerator
 # Update the compression constants
 MAX_CHUNK_SIZE = 5000  # Increased to allow larger chunks
 MAX_TOTAL_SIZE = 20000  # Increased to allow larger total size
-COMPRESSION_LEVEL = 9  # Maximum compression
+try:
+    COMPRESSION_LEVEL = int(os.environ.get("SESSION_ZLIB_LEVEL", "3"))
+except ValueError:
+    COMPRESSION_LEVEL = 3
+COMPRESSION_LEVEL = max(1, min(COMPRESSION_LEVEL, 9))
 
 
 def _df_from_session_json(data):
     """Session chunk data is a list or a JSON records string; avoid pandas literal-string read_json deprecation."""
     if isinstance(data, list):
         return pd.DataFrame(data)
-    return pd.read_json(StringIO(data), orient='records')
+    if isinstance(data, str):
+        try:
+            obj = json.loads(data)
+            if isinstance(obj, list):
+                return pd.DataFrame(obj)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return pd.read_json(StringIO(data), orient="records")
 
 
 def compress_session_data(data):
@@ -1849,19 +1860,11 @@ def load_from_url(url):
 def _posabit_data_view_fetch_timeout_sec() -> float:
     """Bound how long Data View blocks on POSaBit (menu + inventory) so the browser does not hang."""
     try:
-        # Default ~55s: menu short-circuit + tighter Data View inventory caps keep first paint reasonable.
-        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "55")
+        # Default ~40s: menu + optional inventory (POS never blocks first HTML paint — see data_view).
+        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "40")
         return max(15.0, min(t, 600.0))
     except ValueError:
-        return 55.0
-
-
-def _posabit_defer_data_view_matching() -> bool:
-    """When true (default), /data-view returns immediately; POS menu/matches load via /api/… so the page paints without waiting."""
-    return (
-        os.environ.get("POSABIT_DATA_VIEW_DEFER_MATCHING", "true").strip().lower()
-        in ("1", "true", "yes", "on")
-    )
+        return 40.0
 
 
 def _incoming_qty_float_dataview(val):
@@ -2326,12 +2329,7 @@ def data_view():
             flash('Error loading data. Please try again.')
             return redirect(url_for('index'))
         
-        # Debug logging
-        logger.info(f"DataFrame shape: {df.shape}")
-        logger.info(f"DataFrame columns: {df.columns.tolist()}")
-        if not df.empty:
-            logger.info(f"First row data: {df.iloc[0].to_dict()}")
-            logger.info(f"First row keys: {list(df.iloc[0].keys())}")
+        logger.debug("DataFrame shape: %s columns: %s", df.shape, df.columns.tolist())
         
         # Extract transfer information from the DataFrame (first row)
         transfer_info = {
@@ -2342,26 +2340,17 @@ def data_view():
         
         if not df.empty:
             first_row = df.iloc[0]
-            logger.info(f"Extracting from first row: {first_row.to_dict()}")
-            
-            # Use the exact column names that exist in the data
             if 'Vendor' in first_row:
                 transfer_info['vendor'] = str(first_row['Vendor'])
-                logger.info(f"Vendor: {transfer_info['vendor']}")
-            
             if 'Barcode*' in first_row:
                 transfer_info['manifest_id'] = str(first_row['Barcode*'])
-                logger.info(f"Manifest ID (Barcode): {transfer_info['manifest_id']}")
-            
             if 'Accepted Date' in first_row:
                 transfer_info['accepted_date'] = str(first_row['Accepted Date'])
-                logger.info(f"Accepted Date: {transfer_info['accepted_date']}")
-        
-        logger.info(f"Final transfer info: {transfer_info}")
+        logger.debug("transfer_info: %s", transfer_info)
 
         products = _assemble_data_view_products(df, format_type)
 
-        # POSaBit menu: optional; defer matching to API so the shell renders immediately
+        # POSaBit: never block this route on menu/inventory HTTP — matches load via /api/data-view/pos-matches.
         pos_cfg = posabit_config_from_env()
         posabit_venues = pos_cfg.get('venues') or []
         arg_venue = (request.args.get('venue') or '').strip().lower()
@@ -2379,20 +2368,11 @@ def data_view():
         posabit_loading = False
 
         if pos_cfg['enabled'] and posabit_selected:
-            if _posabit_defer_data_view_matching():
-                posabit_loading = True
-                posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
-                _init_empty_pos_fields_on_products(products)
-                for p in products:
-                    p['row_selected_default'] = True
-            else:
-                posabit_match_summary['disabled'] = False
-                posabit_menu_rows, posabit_error, posabit_match_summary = _perform_pos_matching_on_products(
-                    products, pos_cfg, posabit_selected
-                )
-                _apply_row_selected_defaults(
-                    products, pos_cfg, posabit_selected, posabit_error, posabit_match_summary
-                )
+            posabit_loading = True
+            posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
+            _init_empty_pos_fields_on_products(products)
+            for p in products:
+                p['row_selected_default'] = True
         else:
             for p in products:
                 p['pos_description'] = ''
