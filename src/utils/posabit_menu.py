@@ -11,7 +11,7 @@ import os
 import re
 import time
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 import requests
@@ -702,12 +702,158 @@ def fetch_venue_inventory_menu_rows(
     return []
 
 
+def _strict_product_bucket_filter_enabled() -> bool:
+    """When true, fuzzy/contains/token matches only consider menu rows in a compatible product family."""
+    return _truthy_env("POSABIT_MATCH_STRICT_CATEGORY", "1")
+
+
+def _require_brand_vendor_overlap() -> bool:
+    """When true, imported Vendor must overlap POS menu item brand (stricter; off by default)."""
+    return _truthy_env("POSABIT_MATCH_REQUIRE_BRAND", "0")
+
+
+# Padded fragments over normalize_product_name() output (spaces preserved) to reduce false hits.
+_PRODUCT_BUCKET_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    ((" flower ", " eighth ", " grams ", " gram ", " ounce ", " prepack ", " bulk "), "flower"),
+    ((" pre-roll ", " preroll ", " joint ", " blunt ", " infused joint "), "preroll"),
+    ((" cartridge ", " vape ", " 510 ", " disposable ", " pax pod "), "vape"),
+    (
+        (
+            " concentrate ",
+            " rosin ",
+            " resin ",
+            " wax ",
+            " shatter ",
+            " budder ",
+            " hash ",
+            " sauce ",
+            " diamond ",
+            " distillate ",
+            " badder ",
+            " crumble ",
+            " live resin ",
+        ),
+        "concentrate",
+    ),
+    ((" edible ", " gumm ", " chocolate ", " cookie ", " brownie ", " beverage ", " drink ", " mint ", " chew "), "edible"),
+    ((" topical ", " cream ", " balm ", " lotion ", " patch ", " bath ", " salve "), "topical"),
+    ((" tincture ", " capsule ", " tablet ", " spray ", " sublingual "), "oral"),
+)
+
+
+def _haystack_for_buckets(text: str) -> str:
+    t = normalize_product_name(text)
+    if not t:
+        return ""
+    return f" {t} "
+
+
+def _text_product_buckets(text: str) -> frozenset:
+    h = _haystack_for_buckets(text)
+    if not h:
+        return frozenset()
+    found: Set[str] = set()
+    for frags, label in _PRODUCT_BUCKET_RULES:
+        if any(fr in h for fr in frags):
+            found.add(label)
+    return frozenset(found)
+
+
+def _import_match_buckets(vendor: str, product_type: str, product_name: str) -> frozenset:
+    return _text_product_buckets(f"{vendor} {product_type} {product_name}")
+
+
+def _menu_row_buckets(row: Dict[str, Any]) -> frozenset:
+    blob = " ".join(
+        str(row.get(k) or "")
+        for k in ("product_type", "category", "brand", "name", "display", "strain", "description")
+    )
+    return _text_product_buckets(blob)
+
+
+# Families that often overlap in manifests vs POS wording (still blocks e.g. flower vs edible).
+_SOFT_BUCKET_GROUPS: Tuple[frozenset, ...] = (
+    frozenset({"flower", "preroll"}),
+    frozenset({"concentrate", "vape"}),
+    frozenset({"concentrate", "oral"}),
+)
+
+
+def _buckets_compatible(import_b: frozenset, menu_b: frozenset) -> bool:
+    if not import_b or not menu_b:
+        return True
+    if import_b & menu_b:
+        return True
+    u = import_b | menu_b
+    for g in _SOFT_BUCKET_GROUPS:
+        if u <= g and u:
+            return True
+    return False
+
+
+def _vendor_core(s: str) -> str:
+    v = (s or "").strip().lower()
+    if " - " in v:
+        v = v.split(" - ")[-1].strip()
+    return re.sub(r"[^a-z0-9]+", "", v)
+
+
+def _vendor_brand_compatible(import_vendor: str, menu_brand: str) -> bool:
+    if not _require_brand_vendor_overlap():
+        return True
+    a, b = _vendor_core(import_vendor), _vendor_core(menu_brand)
+    if len(a) < 4 or len(b) < 4:
+        return True
+    if a in b or b in a:
+        return True
+    a_toks = {w for w in re.findall(r"[a-z0-9]{4,}", import_vendor.lower()) if w not in _TOKEN_STOP}
+    b_toks = {w for w in re.findall(r"[a-z0-9]{4,}", (menu_brand or "").lower())}
+    return bool(a_toks & b_toks)
+
+
+def _row_compatible_with_import(
+    row: Optional[Dict[str, Any]],
+    import_vendor: str,
+    import_product_type: str,
+    import_name: str,
+) -> bool:
+    if row is None:
+        return True
+    if not _strict_product_bucket_filter_enabled():
+        return True
+    ib = _import_match_buckets(import_vendor, import_product_type, import_name)
+    mb = _menu_row_buckets(row)
+    if not _buckets_compatible(ib, mb):
+        return False
+    if not _vendor_brand_compatible(import_vendor, str(row.get("brand") or "")):
+        return False
+    return True
+
+
+def _filter_norm_keys_for_import(
+    norm_keys: List[str],
+    norm_to_row: Optional[Dict[str, Dict[str, Any]]],
+    import_vendor: str,
+    import_product_type: str,
+    import_name: str,
+    skip_compatibility: bool,
+) -> List[str]:
+    if skip_compatibility or not norm_to_row:
+        return norm_keys
+    return [
+        nk
+        for nk in norm_keys
+        if _row_compatible_with_import(norm_to_row.get(nk), import_vendor, import_product_type, import_name)
+    ]
+
+
 def build_match_index(
     rows: List[Dict[str, Any]],
-) -> Tuple[Dict[str, str], Dict[str, str], List[str]]:
-    """normalized -> POS display label and menu quantity (first row wins per normalized key)."""
+) -> Tuple[Dict[str, str], Dict[str, str], List[str], Dict[str, Dict[str, Any]]]:
+    """normalized -> POS display label, qty, and source menu row (for vendor/category-aware matching)."""
     norm_to_display: Dict[str, str] = {}
     norm_to_qty: Dict[str, str] = {}
+    norm_to_row: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         mq = normalize_pos_menu_qty_cell(row.get("menu_quantity"))
         candidates = [row["display"], row["name"]]
@@ -719,11 +865,12 @@ def build_match_index(
             if n not in norm_to_display:
                 norm_to_display[n] = row["display"] or c
                 norm_to_qty[n] = mq
+                norm_to_row[n] = row
             elif mq:
                 cur = str(norm_to_qty.get(n, "") or "").strip()
                 if not cur or _is_zero_like_qty_text(cur):
                     norm_to_qty[n] = mq
-    return norm_to_display, norm_to_qty, list(norm_to_display.keys())
+    return norm_to_display, norm_to_qty, list(norm_to_display.keys()), norm_to_row
 
 
 def _word_tokens(norm_text: str) -> set:
@@ -737,21 +884,23 @@ def _word_tokens(norm_text: str) -> set:
 def _best_token_match(
     import_norm: str,
     norm_to_display: Dict[str, str],
-    norm_keys: List[str],
+    candidate_keys: List[str],
     min_jaccard: float = 0.28,
 ) -> Tuple[Optional[str], Optional[str], float]:
-    """Return (normalized_key, display, score) for best token-overlap match."""
+    """Return (normalized_key, display, score) for best token-overlap match over ``candidate_keys``."""
     t_import = _word_tokens(import_norm)
     if not t_import:
         return None, None, 0.0
-    # Single distinctive token (e.g. strain name) still helps when name is short.
     if len(t_import) < 2:
-        min_jaccard = min(min_jaccard, 0.18)
+        min_jaccard = min(
+            min_jaccard,
+            0.22 if _strict_product_bucket_filter_enabled() else 0.18,
+        )
     best_k: Optional[str] = None
     best_score = 0.0
     ln = len(import_norm)
     len_slack = max(24, min(120, ln // 2 + 16))
-    for nk in norm_keys:
+    for nk in candidate_keys:
         if abs(len(nk) - ln) > len_slack:
             continue
         t_pos = _word_tokens(nk)
@@ -773,23 +922,52 @@ def find_pos_menu_match(
     norm_to_display: Dict[str, str],
     norm_to_qty: Dict[str, str],
     norm_keys: List[str],
-    fuzzy_cutoff: float = 0.72,
+    fuzzy_cutoff: float = 0.76,
+    *,
+    import_vendor: str = "",
+    import_product_type: str = "",
+    norm_to_row: Optional[Dict[str, Dict[str, Any]]] = None,
+    skip_compatibility: bool = False,
 ) -> Tuple[bool, Optional[str], str, str]:
     """
     Returns (matched, pos_display_name_or_none, kind, menu_quantity_str).
     kind: exact | contains | fuzzy | tokens | none
+
+    When ``norm_to_row`` is set and ``POSABIT_MATCH_STRICT_CATEGORY`` is on (default), non-exact
+    matches only consider menu rows whose product family (flower / vape / edible / …) overlaps
+    the import row (vendor + type + name). Use ``skip_compatibility=True`` for SKU-only lookups.
     """
+    try:
+        fuzzy_cutoff = float(os.environ.get("POSABIT_FUZZY_CUTOFF") or fuzzy_cutoff)
+    except ValueError:
+        pass
+    fuzzy_cutoff = max(0.5, min(fuzzy_cutoff, 0.95))
+
     n = normalize_product_name(import_name)
     if not n:
         return False, None, "none", ""
+
+    filtered = _filter_norm_keys_for_import(
+        norm_keys,
+        norm_to_row,
+        import_vendor,
+        import_product_type,
+        import_name,
+        skip_compatibility,
+    )
+
     if n in norm_to_display:
-        return True, norm_to_display[n], "exact", norm_to_qty.get(n, "")
+        row = norm_to_row.get(n) if norm_to_row else None
+        if skip_compatibility or _row_compatible_with_import(
+            row, import_vendor, import_product_type, import_name
+        ):
+            return True, norm_to_display[n], "exact", norm_to_qty.get(n, "")
+
     best_display: Optional[str] = None
     best_key: Optional[str] = None
     ln = len(n)
-    # Large catalogs: skip substring checks between wildly different lengths (major speedup).
     len_slack = max(24, min(120, ln // 2 + 16))
-    for nk in norm_keys:
+    for nk in filtered:
         lk = len(nk)
         if abs(lk - ln) > len_slack:
             continue
@@ -801,17 +979,13 @@ def find_pos_menu_match(
                 best_display = norm_to_display[nk]
     if best_display and best_key is not None:
         return True, best_display, "contains", norm_to_qty.get(best_key, "")
-    # get_close_matches on the full catalog is O(N) per call and freezes Data View for large menus.
-    fuzzy_candidates = [
-        nk for nk in norm_keys if abs(len(nk) - ln) <= len_slack
-    ]
+    fuzzy_candidates = [nk for nk in filtered if abs(len(nk) - ln) <= len_slack]
     try:
         cap = int(os.environ.get("POSABIT_FUZZY_CANDIDATE_CAP") or "3000")
     except ValueError:
         cap = 3000
     cap = max(400, min(cap, 20_000))
     if len(fuzzy_candidates) > cap:
-        # First 600 by dict order was arbitrary and dropped real matches on large menus.
         fuzzy_candidates.sort(
             key=lambda nk: (
                 -difflib.SequenceMatcher(None, n, nk).quick_ratio(),
@@ -827,7 +1001,8 @@ def find_pos_menu_match(
     if close:
         ck = close[0]
         return True, norm_to_display[ck], "fuzzy", norm_to_qty.get(ck, "")
-    _nk, disp, _score = _best_token_match(n, norm_to_display, norm_keys)
+    token_keys = filtered if filtered else norm_keys
+    _nk, disp, _score = _best_token_match(n, norm_to_display, token_keys)
     if disp and _nk is not None:
         return True, disp, "tokens", norm_to_qty.get(_nk, "")
     return False, None, "none", ""

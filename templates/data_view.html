@@ -152,7 +152,7 @@
           {% if posabit_loading %}
           <div id="posabit-async-banner" class="alert alert-info py-2 small d-flex align-items-center gap-2 mb-2">
             <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-            <span>Loading POS menu and matches. The imported product table stays hidden until this finishes so match status isn’t shown too early.</span>
+            <span>Loading POS menu and matches in the background. Your imported product table is already below — Description, POS menu qty, and status update automatically when ready.</span>
           </div>
           {% else %}
           <p class="mb-2 small text-muted" id="posabit-sync-summary">
@@ -226,18 +226,13 @@
         </div>
         <div class="card-body text-center">
           <button type="button" class="btn btn-success btn-lg me-3" id="btnGenerateSlips" onclick="generateSlips()" 
-                  title="Generate inventory slips for selected products"
-                  {% if posabit_enabled and posabit_loading %}disabled aria-disabled="true"{% endif %}>
+                  title="Generate inventory slips for selected products">
             <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
           </button>
           <button type="button" class="btn btn-info btn-lg" id="btnGenerateRobust" onclick="generateRobustSlips()" 
-                  title="Generate Order Sheets (more reliable)"
-                  {% if posabit_enabled and posabit_loading %}disabled aria-disabled="true"{% endif %}>
+                  title="Generate Order Sheets (more reliable)">
             <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Order Sheet
           </button>
-          {% if posabit_enabled and posabit_loading %}
-          <p class="small text-muted mt-2 mb-0" id="generateWhilePosLoadingHint">These buttons stay disabled until POSaBit matching finishes loading.</p>
-          {% endif %}
           <p class="generate-slips-hint mt-2 mb-0 small">
             Select products from the table below, then click one of the generate buttons above.
           </p>
@@ -254,14 +249,6 @@
           <h5 class="mb-0"><i class="fas fa-table"></i> Imported Data</h5>
         </div>
         <div class="card-body">
-          {% if posabit_enabled and posabit_loading %}
-          <div id="posImportedDataPending" class="text-center py-5 px-3 border border-info border-opacity-25 rounded mb-0" role="status" aria-live="polite" aria-busy="true">
-            <div class="spinner-border text-info mb-3" style="width: 3rem; height: 3rem;" aria-hidden="true"></div>
-            <p class="mb-1 fw-semibold">Loading POSaBit menu and matches…</p>
-            <p class="small text-muted mb-0">The product table stays hidden until row match status and POS quantities are ready so you don’t see placeholder “Not in menu” values.</p>
-          </div>
-          <div id="posImportedDataReady" class="d-none" aria-hidden="true">
-          {% endif %}
           <div class="alert alert-info mb-3 table-tip-alert" style="font-size: 0.95em;">
             <i class="fas fa-arrows-alt-v"></i>
             <strong>Tip:</strong> You can reorder products in the table below by dragging and dropping the rows.
@@ -349,9 +336,6 @@
               </tbody>
             </table>
           </div>
-          {% if posabit_enabled and posabit_loading %}
-          </div>
-          {% endif %}
         </div>
       </div>
     </div>
@@ -478,27 +462,6 @@ function renderPosBadgeCell(td, matched, matchKind) {
   td.appendChild(s);
 }
 
-/** After deferred POS API completes: show imported table and enable generate (idempotent). */
-function revealImportedDataTable() {
-  var pend = document.getElementById('posImportedDataPending');
-  var ready = document.getElementById('posImportedDataReady');
-  if (pend) {
-    pend.classList.add('d-none');
-    pend.setAttribute('aria-hidden', 'true');
-    pend.setAttribute('aria-busy', 'false');
-  }
-  if (ready) {
-    ready.classList.remove('d-none');
-    ready.removeAttribute('aria-hidden');
-  }
-  var g1 = document.getElementById('btnGenerateSlips');
-  var g2 = document.getElementById('btnGenerateRobust');
-  if (g1) { g1.disabled = false; g1.removeAttribute('aria-disabled'); }
-  if (g2) { g2.disabled = false; g2.removeAttribute('aria-disabled'); }
-  var hint = document.getElementById('generateWhilePosLoadingHint');
-  if (hint) hint.classList.add('d-none');
-}
-
 function applyDeferredPosMatches(data) {
   if (!POSABIT_ENABLED || !POS_DEFER_MATCH_FETCH) return;
   var banner = document.getElementById('posabit-async-banner');
@@ -588,11 +551,6 @@ function fetchDeferredPosMatches() {
         bn.className = 'alert alert-warning py-2 mb-2 small';
         bn.textContent = 'Network error loading POS matches. Refresh the page.';
       }
-    })
-    .finally(function () {
-      if (POSABIT_ENABLED && POS_DEFER_MATCH_FETCH) {
-        revealImportedDataTable();
-      }
     });
 }
 let progressModal;
@@ -650,10 +608,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     const generateSection = document.getElementById('generate-slips-section');
-    const posPendingEl = document.getElementById('posImportedDataPending');
-    if (POS_DEFER_MATCH_FETCH && POSABIT_ENABLED && posPendingEl) {
-        posPendingEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } else if (generateSection) {
+    if (generateSection) {
         generateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 

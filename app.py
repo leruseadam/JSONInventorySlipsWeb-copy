@@ -1849,7 +1849,7 @@ def _posabit_data_view_fetch_timeout_sec() -> float:
 
 
 def _posabit_defer_data_view_matching() -> bool:
-    """When true (default), /data-view returns immediately and POS fills in via /api/… (avoids gateway timeouts)."""
+    """When true (default), /data-view returns immediately; POS menu/matches load via /api/… so the page paints without waiting."""
     return (
         os.environ.get("POSABIT_DATA_VIEW_DEFER_MATCHING", "true").strip().lower()
         in ("1", "true", "yes", "on")
@@ -1983,13 +1983,30 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_fetch_pos_menu_rows)
             posabit_menu_rows = fut.result(timeout=timeout_sec)
-        norm_map, norm_qty, norm_keys = build_match_index(posabit_menu_rows)
+        norm_map, norm_qty, norm_keys, norm_to_row = build_match_index(posabit_menu_rows)
         for p in products:
-            ok, disp, kind, mq = find_pos_menu_match(p.get("name") or "", norm_map, norm_qty, norm_keys)
+            ok, disp, kind, mq = find_pos_menu_match(
+                p.get("name") or "",
+                norm_map,
+                norm_qty,
+                norm_keys,
+                import_vendor=str(p.get("vendor") or ""),
+                import_product_type=str(p.get("type") or ""),
+                norm_to_row=norm_to_row,
+            )
             if not ok:
                 sku_val = p.get("sku")
                 if sku_val is not None and str(sku_val).strip():
-                    ok, disp, kind, mq = find_pos_menu_match(str(sku_val).strip(), norm_map, norm_qty, norm_keys)
+                    ok, disp, kind, mq = find_pos_menu_match(
+                        str(sku_val).strip(),
+                        norm_map,
+                        norm_qty,
+                        norm_keys,
+                        import_vendor=str(p.get("vendor") or ""),
+                        import_product_type=str(p.get("type") or ""),
+                        norm_to_row=norm_to_row,
+                        skip_compatibility=True,
+                    )
                     if ok:
                         kind = f"sku:{kind}"
             p["pos_description"] = (disp or "") if ok else ""
