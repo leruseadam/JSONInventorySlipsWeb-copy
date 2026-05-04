@@ -708,15 +708,15 @@ def _strict_product_bucket_filter_enabled() -> bool:
 
 
 def _require_brand_vendor_overlap() -> bool:
-    """When true, imported Vendor must overlap POS menu item brand (stricter; off by default)."""
+    """When true, imported Vendor must overlap text on the POS line (brand/display/name/strain)."""
     return _truthy_env("POSABIT_MATCH_REQUIRE_BRAND", "0")
 
 
 def _match_trailing_by_brand_enabled() -> bool:
     """
-    When true (default), a manifest name ending with ``... by BRAND`` requires every significant
-    token from BRAND to appear as a whole word in the POS row's brand/display/name/strain text.
-    Stops ``Blue Raspberry by Major`` from fuzzy-matching a different vendor's ``Blue Raspberry``.
+    When true (default), manifest-derived brand tokens must appear on the POS row (same identity
+    blob as other brand checks): trailing ``… by BRAND``, and a short leading ``BRAND - …`` prefix
+    (1–2 words before the first `` - ``). Stops cross-brand fuzzy hits on shared flavor names.
     """
     return _truthy_env("POSABIT_MATCH_TRAILING_BY_BRAND", "1")
 
@@ -740,24 +740,89 @@ def _trailing_by_brand_tokens(import_name: str) -> List[str]:
     ]
 
 
+def _leading_dash_brand_tokens(import_name: str) -> List[str]:
+    """
+    Tokens from ``BRAND - rest`` when the head is 1–2 words (e.g. ``Wyld - Sour Cherry``,
+    ``Alpha Crux - Live Resin``). Longer heads are treated as product titles, not a brand prefix.
+    """
+    s = normalize_product_name((import_name or "").strip())
+    if not s or " - " not in s:
+        return []
+    head, tail = s.split(" - ", 1)
+    head, tail = head.strip(), tail.strip()
+    if not head or not tail or len(tail) < 4:
+        return []
+    words = [w for w in head.split() if len(w) >= 3 and w not in _TOKEN_STOP]
+    if not words or len(words) > 2:
+        return []
+    return words
+
+
+def _manifest_brand_tokens(import_name: str) -> List[str]:
+    """Ordered de-duplicated manifest brand hints (trailing ``by`` + short leading ``Brand -``)."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for w in _trailing_by_brand_tokens(import_name) + _leading_dash_brand_tokens(import_name):
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
 def _menu_identity_norm_blob(row: Dict[str, Any]) -> str:
-    parts = [str(row.get(k) or "") for k in ("brand", "display", "name", "strain", "category")]
+    parts = [str(row.get(k) or "") for k in ("brand", "display", "name", "strain", "category", "description")]
     return normalize_product_name(" ".join(parts))
 
 
-def _row_satisfies_trailing_by_brand(row: Optional[Dict[str, Any]], import_name: str) -> bool:
-    if not _match_trailing_by_brand_enabled() or row is None:
+def _tokens_present_in_norm_blob(tokens: List[str], blob: str) -> bool:
+    if not tokens:
         return True
-    need = _trailing_by_brand_tokens(import_name)
-    if not need:
-        return True
-    blob = _menu_identity_norm_blob(row)
     if not blob:
         return False
-    for w in need:
+    for w in tokens:
         if not re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", blob):
             return False
     return True
+
+
+def _row_satisfies_manifest_brand_tokens(row: Optional[Dict[str, Any]], import_name: str) -> bool:
+    if not _match_trailing_by_brand_enabled() or row is None:
+        return True
+    need = _manifest_brand_tokens(import_name)
+    if not need:
+        return True
+    return _tokens_present_in_norm_blob(need, _menu_identity_norm_blob(row))
+
+
+def _vendor_brand_compatible(import_vendor: str, menu_identity_blob: str) -> bool:
+    """
+    When POSABIT_MATCH_REQUIRE_BRAND is on, the import Vendor string must overlap the POS line
+    identity (brand/display/name/strain), not the brand field alone — distributors often appear in
+    display names or licenses only on the manifest side.
+    """
+    if not _require_brand_vendor_overlap():
+        return True
+    blob = normalize_product_name(menu_identity_blob or "")
+    if not blob:
+        return False
+    a, b = _vendor_core(import_vendor), re.sub(r"[^a-z0-9]+", "", blob)
+    if len(a) < 4:
+        return True
+    if a in b:
+        return True
+    a_toks = {w for w in re.findall(r"[a-z0-9]{4,}", (import_vendor or "").lower()) if w not in _TOKEN_STOP}
+    b_toks = {w for w in re.findall(r"[a-z0-9]{4,}", blob)}
+    if a_toks & b_toks:
+        return True
+    # Whole-word hits for vendor tail tokens (e.g. "Some Wholesale - Major")
+    tail = (import_vendor or "").strip()
+    if " - " in tail:
+        tail = tail.split(" - ")[-1].strip()
+    tail_n = normalize_product_name(tail)
+    for w in tail_n.split():
+        if len(w) >= 4 and w not in _TOKEN_STOP and re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", blob):
+            return True
+    return False
 
 
 # Padded fragments over normalize_product_name() output (spaces preserved) to reduce false hits.
@@ -846,19 +911,6 @@ def _vendor_core(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", v)
 
 
-def _vendor_brand_compatible(import_vendor: str, menu_brand: str) -> bool:
-    if not _require_brand_vendor_overlap():
-        return True
-    a, b = _vendor_core(import_vendor), _vendor_core(menu_brand)
-    if len(a) < 4 or len(b) < 4:
-        return True
-    if a in b or b in a:
-        return True
-    a_toks = {w for w in re.findall(r"[a-z0-9]{4,}", import_vendor.lower()) if w not in _TOKEN_STOP}
-    b_toks = {w for w in re.findall(r"[a-z0-9]{4,}", (menu_brand or "").lower())}
-    return bool(a_toks & b_toks)
-
-
 def _row_compatible_with_import(
     row: Optional[Dict[str, Any]],
     import_vendor: str,
@@ -867,15 +919,15 @@ def _row_compatible_with_import(
 ) -> bool:
     if row is None:
         return True
-    if not _strict_product_bucket_filter_enabled():
-        return True
-    ib = _import_match_buckets(import_vendor, import_product_type, import_name)
-    mb = _menu_row_buckets(row)
-    if not _buckets_compatible(ib, mb):
+    if _strict_product_bucket_filter_enabled():
+        ib = _import_match_buckets(import_vendor, import_product_type, import_name)
+        mb = _menu_row_buckets(row)
+        if not _buckets_compatible(ib, mb):
+            return False
+    ident = _menu_identity_norm_blob(row)
+    if not _vendor_brand_compatible(import_vendor, ident):
         return False
-    if not _vendor_brand_compatible(import_vendor, str(row.get("brand") or "")):
-        return False
-    if not _row_satisfies_trailing_by_brand(row, import_name):
+    if not _row_satisfies_manifest_brand_tokens(row, import_name):
         return False
     return True
 
@@ -1011,8 +1063,10 @@ def find_pos_menu_match(
     When ``norm_to_row`` is set and ``POSABIT_MATCH_STRICT_CATEGORY`` is on (default), non-exact
     matches only consider menu rows whose product family (flower / vape / edible / …) overlaps
     the import row (vendor + type + name). With ``POSABIT_MATCH_TRAILING_BY_BRAND`` (default on),
-    a name ending in ``… by BRAND`` requires BRAND tokens to appear in the POS row's brand/display/
-    name/strain text. Use ``skip_compatibility=True`` for SKU-only lookups.
+    manifest brand hints (trailing ``… by BRAND`` and short ``BRAND - …`` prefixes) must appear as
+    words in the POS row identity (brand, display, name, strain, category, description). When
+    ``POSABIT_MATCH_REQUIRE_BRAND`` is on, the import Vendor string is checked against that same
+    identity blob, not the POS brand field alone. Use ``skip_compatibility=True`` for SKU-only lookups.
     """
     try:
         fuzzy_cutoff = float(os.environ.get("POSABIT_FUZZY_CUTOFF") or fuzzy_cutoff)
