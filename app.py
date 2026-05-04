@@ -1819,11 +1819,11 @@ def load_from_url(url):
 def _posabit_data_view_fetch_timeout_sec() -> float:
     """Bound how long Data View blocks on POSaBit (menu + inventory) so the browser does not hang."""
     try:
-        # Default 90s: several menu URLs + inventory pagination can exceed 55s with POSABIT_REQUEST_TIMEOUT≈25s each.
-        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "90")
+        # Default ~55s: menu short-circuit + tighter Data View inventory caps keep first paint reasonable.
+        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "55")
         return max(15.0, min(t, 600.0))
     except ValueError:
-        return 90.0
+        return 55.0
 
 
 @app.route('/data-view')
@@ -1954,14 +1954,17 @@ def data_view():
             cache_key = f"{venue['feed_key'][:8]}:{venue['id']}"
             try:
                 timeout_sec = _posabit_data_view_fetch_timeout_sec()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(
-                        get_menu_rows_cached,
+                def _fetch_pos_menu_rows():
+                    return get_menu_rows_cached(
                         pos_cfg['api_base'],
                         pos_cfg['token'],
                         venue['feed_key'],
                         cache_key,
+                        for_data_view=True,
                     )
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(_fetch_pos_menu_rows)
                     posabit_menu_rows = fut.result(timeout=timeout_sec)
                 norm_map, norm_qty, norm_keys = build_match_index(posabit_menu_rows)
                 for p in products:

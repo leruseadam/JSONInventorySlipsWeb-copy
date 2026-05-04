@@ -20,19 +20,58 @@ logger = logging.getLogger(__name__)
 
 def _request_timeout_sec() -> float:
     try:
-        t = float(os.environ.get("POSABIT_REQUEST_TIMEOUT") or "25")
+        t = float(os.environ.get("POSABIT_REQUEST_TIMEOUT") or "18")
         return max(5.0, min(t, 300.0))
     except ValueError:
-        return 25.0
+        return 18.0
+
+
+def _menu_feed_stop_after_items() -> int:
+    """Once a menu_feed response yields this many menu_items, skip trying remaining URLs."""
+    try:
+        v = int(os.environ.get("POSABIT_MENU_FEED_STOP_AFTER_ITEMS") or "400")
+    except ValueError:
+        return 400
+    if v <= 0:
+        return 10**9  # effectively never short-circuit
+    return max(50, min(v, 100_000))
+
+
+def _inventory_deadline_monotonic(data_view: bool) -> float:
+    """Absolute monotonic deadline for venue inventory pagination."""
+    g = _inventory_fetch_budget_deadline()
+    if not data_view:
+        return g
+    try:
+        dv = float(os.environ.get("POSABIT_DATA_VIEW_INVENTORY_BUDGET_SEC") or "28")
+        dv = max(8.0, min(dv, 300.0))
+    except ValueError:
+        dv = 28.0
+    return min(g, time.monotonic() + dv)
+
+
+def _inventory_effective_max_pages(data_view: bool) -> int:
+    try:
+        max_pages = min(max(int(os.environ.get("POSABIT_INVENTORY_MAX_PAGES") or "250"), 1), 1000)
+    except ValueError:
+        max_pages = 250
+    if not data_view:
+        return max_pages
+    try:
+        cap = int(os.environ.get("POSABIT_DATA_VIEW_INVENTORY_MAX_PAGES") or "22")
+        cap = min(max(cap, 1), 500)
+    except ValueError:
+        cap = 22
+    return min(max_pages, cap)
 
 
 def _inventory_fetch_budget_deadline() -> float:
     """Wall-clock stop time for the whole inventory fetch (several endpoints + pages)."""
     try:
-        b = float(os.environ.get("POSABIT_INVENTORY_FETCH_BUDGET_SEC") or "60")
+        b = float(os.environ.get("POSABIT_INVENTORY_FETCH_BUDGET_SEC") or "45")
         b = max(15.0, min(b, 300.0))
     except ValueError:
-        b = 60.0
+        b = 45.0
     return time.monotonic() + b
 
 
@@ -142,11 +181,11 @@ def fetch_menu_feed_json(api_base: str, bearer_token: str, feed_key: str) -> Dic
     venue_seg = quote(venue_path, safe="-_.~") if venue_path else ""
 
     urls: List[str] = []
-    # Partner docs use Bearer + /api/v1/menu_feeds/{key} — try global endpoints first
+    # Prefer v2 first (often larger payload); then v1.
     urls.extend(
         [
-            f"{base}/v1/menu_feeds/{feed_key}",
             f"{base}/v2/menu_feeds/{feed_key}",
+            f"{base}/v1/menu_feeds/{feed_key}",
         ]
     )
     if venue_path:
@@ -185,6 +224,12 @@ def fetch_menu_feed_json(api_base: str, bearer_token: str, feed_key: str) -> Dic
             if best is None or n > best_n:
                 best = data
                 best_n = n
+                if best_n >= _menu_feed_stop_after_items():
+                    logger.info(
+                        "POSaBit menu: using %d items from this endpoint (POSABIT_MENU_FEED_STOP_AFTER_ITEMS reached; skipping later URLs).",
+                        best_n,
+                    )
+                    return best
         except requests.RequestException as e:
             last_exc = e
             failures.append(str(e))
@@ -347,7 +392,12 @@ def parse_inventory_records(inv: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def fetch_venue_inventory_menu_rows(api_base: str, bearer_token: str) -> List[Dict[str, Any]]:
+def fetch_venue_inventory_menu_rows(
+    api_base: str,
+    bearer_token: str,
+    *,
+    data_view: bool = False,
+) -> List[Dict[str, Any]]:
     """
     Paginated GET /v2/venue/inventories (or v1) — real SKUs on hand when menu_feed is empty.
     See POSaBit docs: inventory[].name, brand, strain, sku, category.
@@ -371,21 +421,20 @@ def fetch_venue_inventory_menu_rows(api_base: str, bearer_token: str) -> List[Di
         "Accept": "application/json; charset=utf-8",
         "Authorization": f"Bearer {bearer_token}",
     }
-    inv_deadline = _inventory_fetch_budget_deadline()
+    inv_deadline = _inventory_deadline_monotonic(data_view)
+    max_pages = _inventory_effective_max_pages(data_view)
     logger.info(
-        "POSaBit venue inventory: trying %d URL(s), first %s (budget %.0fs)",
+        "POSaBit venue inventory: trying %d URL(s), first %s (budget %.0fs, max_pages=%d, data_view=%s)",
         len(endpoints),
         endpoints[0].replace(base, "") or endpoints[0],
         inv_deadline - time.monotonic(),
+        max_pages,
+        data_view,
     )
     try:
         per_page = min(max(int(os.environ.get("POSABIT_INVENTORY_PER_PAGE") or "200"), 1), 500)
     except ValueError:
         per_page = 200
-    try:
-        max_pages = min(max(int(os.environ.get("POSABIT_INVENTORY_MAX_PAGES") or "250"), 1), 1000)
-    except ValueError:
-        max_pages = 250
 
     for ep in endpoints:
         combined: List[Dict[str, Any]] = []
@@ -508,7 +557,11 @@ def _best_token_match(
         return None, None, 0.0
     best_k: Optional[str] = None
     best_score = 0.0
+    ln = len(import_norm)
+    len_slack = max(24, min(120, ln // 2 + 16))
     for nk in norm_keys:
+        if abs(len(nk) - ln) > len_slack:
+            continue
         t_pos = _word_tokens(nk)
         if not t_pos:
             continue
@@ -541,16 +594,32 @@ def find_pos_menu_match(
         return True, norm_to_display[n], "exact", norm_to_qty.get(n, "")
     best_display: Optional[str] = None
     best_key: Optional[str] = None
+    ln = len(n)
+    # Large catalogs: skip substring checks between wildly different lengths (major speedup).
+    len_slack = max(24, min(120, ln // 2 + 16))
     for nk in norm_keys:
+        lk = len(nk)
+        if abs(lk - ln) > len_slack:
+            continue
         if n in nk or nk in n:
-            if len(nk) < 4 and len(n) > 12:
+            if lk < 4 and ln > 12:
                 continue
-            if best_key is None or abs(len(n) - len(nk)) < abs(len(n) - len(best_key)):
+            if best_key is None or abs(ln - lk) < abs(ln - len(best_key)):
                 best_key = nk
                 best_display = norm_to_display[nk]
     if best_display and best_key is not None:
         return True, best_display, "contains", norm_to_qty.get(best_key, "")
-    close = difflib.get_close_matches(n, norm_keys, n=1, cutoff=fuzzy_cutoff)
+    # get_close_matches on the full catalog is O(N) per call and freezes Data View for large menus.
+    fuzzy_candidates = [
+        nk for nk in norm_keys if abs(len(nk) - ln) <= len_slack
+    ]
+    if len(fuzzy_candidates) > 600:
+        fuzzy_candidates = fuzzy_candidates[:600]
+    close = (
+        difflib.get_close_matches(n, fuzzy_candidates, n=1, cutoff=fuzzy_cutoff)
+        if fuzzy_candidates
+        else []
+    )
     if close:
         ck = close[0]
         return True, norm_to_display[ck], "fuzzy", norm_to_qty.get(ck, "")
@@ -566,9 +635,12 @@ def get_menu_rows_cached(
     feed_key: str,
     cache_key: str,
     ttl_sec: float = _CACHE_TTL_SEC,
+    *,
+    for_data_view: bool = False,
 ) -> List[Dict[str, Any]]:
     now = time.time()
-    ent = _MENU_CACHE.get(cache_key)
+    eff_key = f"{cache_key}:dv" if for_data_view else cache_key
+    ent = _MENU_CACHE.get(eff_key)
     if ent and (now - ent[0]) < ttl_sec and ent[1]:
         return ent[1]
     data = fetch_menu_feed_json(api_base, token, feed_key)
@@ -577,7 +649,7 @@ def get_menu_rows_cached(
     if not rows and _truthy_env("POSABIT_FALLBACK_TO_VENUE_INVENTORY", "1"):
         inv_attempted = True
         logger.info("POSaBit: fetching venue inventory (menu_feed had no items to match)")
-        rows = fetch_venue_inventory_menu_rows(api_base, token)
+        rows = fetch_venue_inventory_menu_rows(api_base, token, data_view=for_data_view)
     if not rows:
         if inv_attempted:
             logger.warning(
@@ -589,5 +661,5 @@ def get_menu_rows_cached(
                 "POSaBit: 0 matchable products; set POSABIT_FALLBACK_TO_VENUE_INVENTORY=1 to try /venue/inventories when the menu feed is empty."
             )
     if rows:
-        _MENU_CACHE[cache_key] = (now, rows)
+        _MENU_CACHE[eff_key] = (now, rows)
     return rows
