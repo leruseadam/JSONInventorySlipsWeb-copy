@@ -965,6 +965,8 @@ def parse_bamboo_data(json_data):
                 "Barcode*": item.get("inventory_id", "") or item.get("external_id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
+                "from_license_number": from_license_number,
+                "from_license_name": from_license_name,
                 "Strain Name": item.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
@@ -1026,6 +1028,8 @@ def parse_cultivera_data(json_data):
                 "Barcode*": item.get("barcode", "") or item.get("id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
+                "from_license_number": vendor_license,
+                "from_license_name": vendor_name,
                 "Strain Name": product.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
@@ -1045,7 +1049,9 @@ def parse_growflow_data(json_data):
                 'from_license_name' in json_data):
             return pd.DataFrame()
         
-        vendor_meta = f"{json_data.get('from_license_number', '')} - {json_data.get('from_license_name', 'Unknown Vendor')}"
+        from_license_number = json_data.get("from_license_number", "")
+        from_license_name = json_data.get("from_license_name", "")
+        vendor_meta = f"{from_license_number} - {from_license_name}"
         raw_date = json_data.get("est_arrival_at", "") or json_data.get("transferred_at", "")
         accepted_date = raw_date.split("T")[0] if "T" in raw_date else raw_date
         
@@ -1064,6 +1070,8 @@ def parse_growflow_data(json_data):
                 "Barcode*": item.get("product_sku", "") or item.get("inventory_id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
+                "from_license_number": from_license_number,
+                "from_license_name": from_license_name,
                 "Strain Name": item.get("strain_name", ""),
                 "THC Content": f"{thc_value}%",
                 "CBD Content": f"{cbd_value}%",
@@ -1892,6 +1900,29 @@ def _apply_row_selected_defaults(products: list, pos_cfg: dict, posabit_selected
         p["row_selected_default"] = not (not_in_menu and low_qty)
 
 
+def _data_view_pos_vendor_string(row) -> str:
+    """
+    POSaBit import_vendor: use ``Vendor`` together with per-row ``from_license_*`` when present.
+    Manifest sender is the same identity whether it appears only in ``Vendor`` or only under
+    ``from_license_name`` / ``from_license_number``.
+    """
+    v = str(row.get("Vendor", "") or row.get("vendor", "") or "").strip()
+    lnum = str(row.get("from_license_number", "") or "").strip()
+    lname = str(row.get("from_license_name", "") or "").strip()
+    lic_meta = f"{lnum} - {lname}".strip(" -").strip() if (lnum or lname) else ""
+
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+    if not lic_meta:
+        return v or "Unknown"
+    if not v or v.lower() in ("unknown", "unknown vendor"):
+        return lic_meta
+    if norm(v) == norm(lic_meta) or norm(lic_meta) in norm(v) or norm(v) in norm(lic_meta):
+        return v
+    return f"{v} {lic_meta}".strip()
+
+
 def _excel_products_for_data_view(df) -> list:
     excel_products = []
     excel_df_json = get_chunked_data("excel_df")
@@ -1912,7 +1943,7 @@ def _excel_products_for_data_view(df) -> list:
                     "sku": str(row.get("sku", "") or row.get("barcode", "")),
                     "quantity": str(row.get("quantity", "0")),
                     "source": "Excel Upload",
-                    "vendor": str(row.get("vendor", "Unknown")),
+                    "vendor": _data_view_pos_vendor_string(row),
                     "manifest_id": str(row.get("sku", "N/A")),
                     "accepted_date": str(row.get("accepted_date", "N/A")),
                     "type": str(row.get("product_type", "Unknown")),
@@ -1942,7 +1973,7 @@ def _main_json_products_for_data_view(df, format_type):
                 "sku": str(row.get("Barcode*", "")),
                 "quantity": str(row.get("Quantity Received*", "")),
                 "source": format_type or "Unknown",
-                "vendor": str(row.get("Vendor", "Unknown")),
+                "vendor": _data_view_pos_vendor_string(row),
                 "manifest_id": str(row.get("Barcode*", "N/A")),
                 "accepted_date": str(row.get("Accepted Date", "N/A")),
                 "type": str(row.get("Product Type*", "Unknown")),
@@ -2164,6 +2195,8 @@ def _inject_pos_quantity_for_generation(selected_df):
                     "name": str(row.get("Product Name*", "")),
                     "sku": str(row.get("Barcode*", "")),
                     "quantity": str(row.get("Quantity Received*", "")),
+                    "vendor": _data_view_pos_vendor_string(row),
+                    "type": str(row.get("Product Type*", "Unknown")),
                 }
             )
         _init_empty_pos_fields_on_products(products)
