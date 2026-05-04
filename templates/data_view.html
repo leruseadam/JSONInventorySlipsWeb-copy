@@ -269,7 +269,8 @@
                     <input type="checkbox" class="form-check-input" id="selectAllCheckbox" aria-label="Select all products">
                   </th>
                   <th>Product Name</th>
-                  {% if posabit_enabled %}<th>Description</th>{% endif %}
+                  <th title="Cultivera/WCIA integrator_data — exact key for POS / Excel matching">Integrator code</th>
+                  {% if posabit_enabled %}<th title="POS menu line matched for this row">POS menu line</th>{% endif %}
                   <th>Strain</th>
                   <th>SKU</th>
                   <th>Quantity{% if posabit_enabled %} <span class="text-muted small fw-normal">(incoming)</span>{% endif %}</th>
@@ -282,7 +283,7 @@
                                                 {% for group in groups %}
                                                     {% set group_idx = loop.index0 %}
                                                     <tr class="table-group-header bg-light group-draggable" draggable="true" data-group="{{ group_idx }}">
-                                                        <td colspan="{% if posabit_enabled %}9{% else %}6{% endif %}" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
+                                                        <td colspan="{% if posabit_enabled %}10{% else %}7{% endif %}" style="padding: 0.5rem 1rem; background:#102d4a; border-top:2px solid #1e3a5c; cursor:move;">
                                                             <div class="d-flex justify-content-between align-items-center">
                                                                 <span style="font-weight: 600;">Group {{ loop.index }} - {{ group.group_label }}</span>
                                                                 <div class="form-check">
@@ -298,6 +299,7 @@
                                                                                     <input type="checkbox" class="form-check-input product-checkbox" value="{{ product.id }}" {% if product.row_selected_default|default(true) %}checked{% endif %} aria-label="Select {{ product.name|safe }}">
                                                                                 </td>
                                                                                 <td>{{ product.name | replace('Medically Compliant - ', '') | safe }}</td>
+                                                                                <td class="integrator-code-cell text-monospace small">{% if product.product_shorthand %}<span title="Manifest integrator code">{{ product.product_shorthand | e }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
                                                                                 {% if posabit_enabled %}
                                                                                 <td class="pos-desc-cell">{% if product.pos_description %}<span title="Matched POS menu name">{{ product.pos_description | e }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
                                                                                 {% endif %}
@@ -421,7 +423,7 @@
 
 {% block extra_js %}
 <script>
-const GROUP_COLSPAN = {{ 9 if (posabit_enabled|default(false)) else 6 }};
+const GROUP_COLSPAN = {{ 10 if (posabit_enabled|default(false)) else 7 }};
 const POSABIT_ENABLED = {{ (posabit_enabled|default(false))|tojson }};
 const POS_DEFER_MATCH_FETCH = {{ (posabit_loading|default(false))|tojson }};
 const POS_MATCHES_URL = {{ url_for('api_data_view_pos_matches')|tojson }};
@@ -1023,8 +1025,8 @@ function exportToCSV() {
     const csvData = [];
     
     csvData.push(POSABIT_ENABLED
-        ? ['Product Name', 'Description (POS match)', 'Strain', 'SKU', 'Quantity (incoming)', 'POS menu qty', 'Source', 'POS menu']
-        : ['Product Name', 'Strain', 'SKU', 'Quantity', 'Source']);
+        ? ['Product Name', 'Integrator code', 'POS menu line', 'Strain', 'SKU', 'Quantity (incoming)', 'POS menu qty', 'Source', 'POS menu']
+        : ['Product Name', 'Integrator code', 'Strain', 'SKU', 'Quantity', 'Source']);
     
     selectedProducts.forEach(productId => {
         const row = rows[productId];
@@ -1039,14 +1041,16 @@ function exportToCSV() {
                     cells[5].textContent.trim(),
                     cells[6].textContent.trim(),
                     cells[7].textContent.trim(),
-                    cells[8].textContent.trim()
+                    cells[8].textContent.trim(),
+                    cells[9].textContent.trim()
                 ]
                 : [
                     cells[1].textContent.trim(),
                     cells[2].textContent.trim(),
                     cells[3].textContent.trim(),
                     cells[4].textContent.trim(),
-                    cells[5].textContent.trim()
+                    cells[5].textContent.trim(),
+                    cells[6].textContent.trim()
                 ];
             csvData.push(rowData);
         }
@@ -1088,19 +1092,21 @@ function exportToJSON() {
             const cells = row.querySelectorAll('td');
             const productData = POSABIT_ENABLED ? {
                 product_name: cells[1].textContent.trim(),
-                pos_description: cells[2].textContent.trim(),
+                integrator_code: cells[2].textContent.trim(),
+                pos_description: cells[3].textContent.trim(),
+                strain: cells[4].textContent.trim(),
+                sku: cells[5].textContent.trim(),
+                quantity: cells[6].textContent.trim(),
+                pos_menu_quantity: cells[7].textContent.trim(),
+                source: cells[8].textContent.trim(),
+                pos_menu: cells[9].textContent.trim()
+            } : {
+                product_name: cells[1].textContent.trim(),
+                integrator_code: cells[2].textContent.trim(),
                 strain: cells[3].textContent.trim(),
                 sku: cells[4].textContent.trim(),
                 quantity: cells[5].textContent.trim(),
-                pos_menu_quantity: cells[6].textContent.trim(),
-                source: cells[7].textContent.trim(),
-                pos_menu: cells[8].textContent.trim()
-            } : {
-                product_name: cells[1].textContent.trim(),
-                strain: cells[2].textContent.trim(),
-                sku: cells[3].textContent.trim(),
-                quantity: cells[4].textContent.trim(),
-                source: cells[5].textContent.trim()
+                source: cells[6].textContent.trim()
             };
             jsonData.push(productData);
         }

@@ -981,7 +981,9 @@ def parse_bamboo_data(json_data):
                 "Strain Name": item.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
-                "Source System": "Bamboo"
+                "Source System": "Bamboo",
+                # Cultivera/WCIA interop product id — use for exact POS / Excel alignment (same as legacy matcher).
+                "Integrator Data": str(item.get("integrator_data") or "").strip(),
             })
         
         return pd.DataFrame(records)
@@ -1044,7 +1046,8 @@ def parse_cultivera_data(json_data):
                 "Strain Name": product.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
-                "Source System": "Cultivera"
+                "Source System": "Cultivera",
+                "Integrator Data": str(item.get("integrator_data") or "").strip(),
             })
         
         return pd.DataFrame(records)
@@ -1954,6 +1957,12 @@ def _excel_products_for_data_view(df) -> list:
                     "brand": str(row.get("brand", "")),
                     "weight": str(row.get("weight", "")),
                     "weight_unit": str(row.get("weight_unit", "")),
+                    "product_shorthand": str(
+                        row.get("Integrator Data", "")
+                        or row.get("integrator_data", "")
+                        or row.get("product_shorthand", "")
+                        or ""
+                    ).strip(),
                 }
             )
     except Exception as e:
@@ -1981,6 +1990,12 @@ def _main_json_products_for_data_view(df, format_type):
                 "accepted_date": str(row.get("Accepted Date", "N/A")),
                 "type": str(row.get("Product Type*", "Unknown")),
                 "cost": float(row.get("Cost", 0)) if "Cost" in row else 0,
+                "product_shorthand": str(
+                    row.get("Integrator Data", "")
+                    or row.get("integrator_data", "")
+                    or row.get("Product Shorthand*", "")
+                    or ""
+                ).strip(),
             }
         )
     return products
@@ -1990,6 +2005,20 @@ def _assemble_data_view_products(df, format_type) -> list:
     products = _main_json_products_for_data_view(df, format_type)
     products.extend(_excel_products_for_data_view(df))
     return products
+
+
+def _strict_integrator_pos_matching() -> bool:
+    """
+    When true (default), if the manifest row has ``Integrator Data`` / ``product_shorthand``,
+    POS name-fuzzy matching is skipped when that code does not hit the menu (avoids wrong
+    ``Pure - Live Resin …`` lines colliding). Barcode/SKU match is still tried as a last exact step.
+    """
+    return (os.environ.get("POSABIT_MATCH_STRICT_IF_INTEGRATOR_CODE") or "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_selected: str):
@@ -2018,17 +2047,42 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
             fut = pool.submit(_fetch_pos_menu_rows)
             posabit_menu_rows = fut.result(timeout=timeout_sec)
         norm_map, norm_qty, norm_keys, norm_to_row = build_match_index(posabit_menu_rows)
+        strict_ic = _strict_integrator_pos_matching()
         for p in products:
-            ok, disp, kind, mq = find_pos_menu_match(
-                p.get("name") or "",
-                norm_map,
-                norm_qty,
-                norm_keys,
-                import_vendor=str(p.get("vendor") or ""),
-                import_product_type=str(p.get("type") or ""),
-                norm_to_row=norm_to_row,
-            )
-            if not ok:
+            ok = False
+            disp = None
+            kind = "none"
+            mq = ""
+            sh = str(p.get("product_shorthand") or "").strip()
+            iv = str(p.get("vendor") or "")
+            pt = str(p.get("type") or "")
+
+            if sh:
+                ok, disp, kind, mq = find_pos_menu_match(
+                    sh,
+                    norm_map,
+                    norm_qty,
+                    norm_keys,
+                    import_vendor=iv,
+                    import_product_type=pt,
+                    norm_to_row=norm_to_row,
+                    skip_compatibility=True,
+                )
+                if ok:
+                    kind = f"integrator:{kind}"
+
+            if not ok and not (sh and strict_ic):
+                ok, disp, kind, mq = find_pos_menu_match(
+                    p.get("name") or "",
+                    norm_map,
+                    norm_qty,
+                    norm_keys,
+                    import_vendor=iv,
+                    import_product_type=pt,
+                    norm_to_row=norm_to_row,
+                )
+
+            if not ok and not (sh and strict_ic):
                 sku_val = p.get("sku")
                 if sku_val is not None and str(sku_val).strip():
                     ok, disp, kind, mq = find_pos_menu_match(
@@ -2036,13 +2090,30 @@ def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_sel
                         norm_map,
                         norm_qty,
                         norm_keys,
-                        import_vendor=str(p.get("vendor") or ""),
-                        import_product_type=str(p.get("type") or ""),
+                        import_vendor=iv,
+                        import_product_type=pt,
                         norm_to_row=norm_to_row,
                         skip_compatibility=True,
                     )
                     if ok:
                         kind = f"sku:{kind}"
+
+            if not ok and sh and strict_ic:
+                sku_val = p.get("sku")
+                if sku_val is not None and str(sku_val).strip():
+                    ok, disp, kind, mq = find_pos_menu_match(
+                        str(sku_val).strip(),
+                        norm_map,
+                        norm_qty,
+                        norm_keys,
+                        import_vendor=iv,
+                        import_product_type=pt,
+                        norm_to_row=norm_to_row,
+                        skip_compatibility=True,
+                    )
+                    if ok:
+                        kind = f"sku:{kind}"
+
             p["pos_description"] = (disp or "") if ok else ""
             p["pos_matched"] = bool(ok)
             p["pos_match_kind"] = kind
@@ -2200,6 +2271,12 @@ def _inject_pos_quantity_for_generation(selected_df):
                     "quantity": str(row.get("Quantity Received*", "")),
                     "vendor": _data_view_pos_vendor_string(row),
                     "type": str(row.get("Product Type*", "Unknown")),
+                    "product_shorthand": str(
+                        row.get("Integrator Data", "")
+                        or row.get("integrator_data", "")
+                        or row.get("Product Shorthand*", "")
+                        or ""
+                    ).strip(),
                 }
             )
         _init_empty_pos_fields_on_products(products)
