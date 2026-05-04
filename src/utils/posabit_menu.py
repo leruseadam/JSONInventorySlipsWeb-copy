@@ -712,6 +712,54 @@ def _require_brand_vendor_overlap() -> bool:
     return _truthy_env("POSABIT_MATCH_REQUIRE_BRAND", "0")
 
 
+def _match_trailing_by_brand_enabled() -> bool:
+    """
+    When true (default), a manifest name ending with ``... by BRAND`` requires every significant
+    token from BRAND to appear as a whole word in the POS row's brand/display/name/strain text.
+    Stops ``Blue Raspberry by Major`` from fuzzy-matching a different vendor's ``Blue Raspberry``.
+    """
+    return _truthy_env("POSABIT_MATCH_TRAILING_BY_BRAND", "1")
+
+
+def _trailing_by_brand_tokens(import_name: str) -> List[str]:
+    """Tokens from a trailing ``by …`` clause (e.g. ``… by Major`` -> [``major``])."""
+    s = (import_name or "").strip()
+    if not s:
+        return []
+    m = re.search(r"(?i)\s+by\s+(.+)$", s)
+    if not m:
+        return []
+    tail = normalize_product_name(m.group(1))
+    tail = re.sub(r"^the\s+", "", tail).strip()
+    if not tail:
+        return []
+    return [
+        w
+        for w in tail.split()
+        if len(w) >= 3 and w not in _TOKEN_STOP
+    ]
+
+
+def _menu_identity_norm_blob(row: Dict[str, Any]) -> str:
+    parts = [str(row.get(k) or "") for k in ("brand", "display", "name", "strain", "category")]
+    return normalize_product_name(" ".join(parts))
+
+
+def _row_satisfies_trailing_by_brand(row: Optional[Dict[str, Any]], import_name: str) -> bool:
+    if not _match_trailing_by_brand_enabled() or row is None:
+        return True
+    need = _trailing_by_brand_tokens(import_name)
+    if not need:
+        return True
+    blob = _menu_identity_norm_blob(row)
+    if not blob:
+        return False
+    for w in need:
+        if not re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", blob):
+            return False
+    return True
+
+
 # Padded fragments over normalize_product_name() output (spaces preserved) to reduce false hits.
 _PRODUCT_BUCKET_RULES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
     ((" flower ", " eighth ", " grams ", " gram ", " ounce ", " prepack ", " bulk "), "flower"),
@@ -827,6 +875,8 @@ def _row_compatible_with_import(
         return False
     if not _vendor_brand_compatible(import_vendor, str(row.get("brand") or "")):
         return False
+    if not _row_satisfies_trailing_by_brand(row, import_name):
+        return False
     return True
 
 
@@ -847,6 +897,27 @@ def _filter_norm_keys_for_import(
     ]
 
 
+def _match_index_upsert(
+    n: str,
+    display_label: str,
+    mq: str,
+    row: Dict[str, Any],
+    norm_to_display: Dict[str, str],
+    norm_to_qty: Dict[str, str],
+    norm_to_row: Dict[str, Dict[str, Any]],
+) -> None:
+    if not n:
+        return
+    if n not in norm_to_display:
+        norm_to_display[n] = display_label
+        norm_to_qty[n] = mq
+        norm_to_row[n] = row
+    elif mq:
+        cur = str(norm_to_qty.get(n, "") or "").strip()
+        if not cur or _is_zero_like_qty_text(cur):
+            norm_to_qty[n] = mq
+
+
 def build_match_index(
     rows: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, str], Dict[str, str], List[str], Dict[str, Dict[str, Any]]]:
@@ -856,20 +927,24 @@ def build_match_index(
     norm_to_row: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         mq = normalize_pos_menu_qty_cell(row.get("menu_quantity"))
+        brand = str(row.get("brand") or "").strip()
+        label = str(row.get("display") or row.get("name") or "").strip()
+        display_label = label or ""
         candidates = [row["display"], row["name"]]
         candidates.extend(row.get("variant_names") or [])
         for c in candidates:
+            c = str(c or "").strip()
+            if not c:
+                continue
             n = normalize_product_name(c)
             if not n:
                 continue
-            if n not in norm_to_display:
-                norm_to_display[n] = row["display"] or c
-                norm_to_qty[n] = mq
-                norm_to_row[n] = row
-            elif mq:
-                cur = str(norm_to_qty.get(n, "") or "").strip()
-                if not cur or _is_zero_like_qty_text(cur):
-                    norm_to_qty[n] = mq
+            dl = display_label or c
+            _match_index_upsert(n, dl, mq, row, norm_to_display, norm_to_qty, norm_to_row)
+            if brand:
+                bn = normalize_product_name(f"{brand} {c}")
+                if bn and bn != n:
+                    _match_index_upsert(bn, dl, mq, row, norm_to_display, norm_to_qty, norm_to_row)
     return norm_to_display, norm_to_qty, list(norm_to_display.keys()), norm_to_row
 
 
@@ -935,7 +1010,9 @@ def find_pos_menu_match(
 
     When ``norm_to_row`` is set and ``POSABIT_MATCH_STRICT_CATEGORY`` is on (default), non-exact
     matches only consider menu rows whose product family (flower / vape / edible / …) overlaps
-    the import row (vendor + type + name). Use ``skip_compatibility=True`` for SKU-only lookups.
+    the import row (vendor + type + name). With ``POSABIT_MATCH_TRAILING_BY_BRAND`` (default on),
+    a name ending in ``… by BRAND`` requires BRAND tokens to appear in the POS row's brand/display/
+    name/strain text. Use ``skip_compatibility=True`` for SKU-only lookups.
     """
     try:
         fuzzy_cutoff = float(os.environ.get("POSABIT_FUZZY_CUTOFF") or fuzzy_cutoff)
@@ -1001,7 +1078,9 @@ def find_pos_menu_match(
     if close:
         ck = close[0]
         return True, norm_to_display[ck], "fuzzy", norm_to_qty.get(ck, "")
-    token_keys = filtered if filtered else norm_keys
+    # Always use ``filtered`` (not ``if filtered else norm_keys``): an empty list means every
+    # candidate failed row compatibility (e.g. trailing ``by Brand``); do not widen to all keys.
+    token_keys = filtered
     _nk, disp, _score = _best_token_match(n, norm_to_display, token_keys)
     if disp and _nk is not None:
         return True, disp, "tokens", norm_to_qty.get(_nk, "")
