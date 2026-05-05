@@ -30,7 +30,7 @@ import re
 import webbrowser
 import time
 from functools import wraps
-from io import BytesIO, StringIO
+from io import BytesIO
 import zlib
 from pathlib import Path
 from datetime import datetime
@@ -56,7 +56,6 @@ from io import BytesIO
 import zlib
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
 
 # Third-party imports
 from flask import (
@@ -93,107 +92,6 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-_APP_ROOT = Path(__file__).resolve().parent
-_ENV_FILE_PRIMARY = _APP_ROOT / '.env'
-
-
-def load_env_file(path: Path) -> int:
-    """Read .env into os.environ. Values override existing keys. Returns number of entries applied."""
-    try:
-        if not path.is_file():
-            return 0
-        raw = path.read_text(encoding='utf-8-sig', errors='replace')
-    except OSError:
-        return 0
-    applied = 0
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if line.lower().startswith('export '):
-            line = line[7:].strip()
-        if '=' not in line:
-            continue
-        key, _, val = line.partition('=')
-        key = key.strip().lstrip('\ufeff')
-        if not key:
-            continue
-        val = val.strip()
-        # Drop trailing `# comment` when value is not quoted
-        if val and not (val[0] in ('"', "'") and len(val) >= 2):
-            if '#' in val:
-                val = val.split('#', 1)[0].rstrip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-            val = val[1:-1]
-        os.environ[key] = val
-        applied += 1
-    return applied
-
-
-def load_env_from_search_paths() -> None:
-    """Load `.env`: optional cwd file first, then the project `.env` next to app.py (wins on conflicts)."""
-    cwd_env = Path.cwd() / '.env'
-    primary = _ENV_FILE_PRIMARY
-    try:
-        from dotenv import load_dotenv
-        if cwd_env.is_file() and cwd_env.resolve() != primary.resolve():
-            load_dotenv(cwd_env, override=True)
-    except ImportError:
-        logger.debug('python-dotenv not installed; reading .env with built-in parser')
-    if cwd_env.is_file() and cwd_env.resolve() != primary.resolve():
-        n_cwd = load_env_file(cwd_env)
-        logger.info('Loaded %d entries from %s', n_cwd, cwd_env)
-    # Project `.env` always applied with our parser (utf-8-sig, same rules as above)
-    n_pri = load_env_file(primary)
-    if primary.is_file():
-        sz = primary.stat().st_size
-        logger.info('Loaded environment file: %s (%d KEY=value entries, %d bytes)', primary, n_pri, sz)
-        if sz == 0:
-            logger.warning(
-                '.env exists but is 0 bytes on disk — save your editor buffer (Cmd+S) or run: '
-                'cp env.example .env && edit .env (see env.example next to app.py).'
-            )
-        elif sz > 30 and n_pri == 0:
-            logger.warning(
-                '.env is not empty but no KEY=value lines were parsed. '
-                'Use one assignment per line, e.g. USE_POSABIT_PRODUCTS=true (UTF-8).'
-            )
-    else:
-        logger.warning(
-            'No .env file at %s — create it or set POSaBit variables in the shell.',
-            primary,
-        )
-
-
-load_env_from_search_paths()
-
-from src.utils.posabit_menu import (
-    build_match_index,
-    find_pos_menu_match,
-    format_old_units_remaining_for_slip,
-    get_menu_rows_cached,
-    normalize_pos_menu_qty_cell,
-    posabit_config_from_env,
-)
-import concurrent.futures
-
-_posabit_boot = posabit_config_from_env()
-_tok = (os.environ.get('POSABIT_ORDER_PAD_TOKEN') or '').strip()
-_feed_b = (os.environ.get('POSABIT_MENU_FEED_KEY_BOTHELL') or '').strip()
-logger.info(
-    'POSaBit env after load: USE_POSABIT_PRODUCTS=%r | token_len=%s | BOTHELL_feed_len=%s',
-    (os.environ.get('USE_POSABIT_PRODUCTS') or '').strip(),
-    len(_tok),
-    len(_feed_b),
-)
-if _posabit_boot['enabled']:
-    logger.info('POSaBit menu matching enabled (%d store feed(s)).', len(_posabit_boot.get('venues') or []))
-else:
-    logger.warning(
-        'POSaBit menu matching is OFF: %s',
-        ' | '.join(_posabit_boot.get('disabled_reasons') or ['see .env next to app.py']),
-    )
-
 import requests
 import pandas as pd
 from docxtpl import DocxTemplate
@@ -213,26 +111,7 @@ from src.ui.app import InventorySlipGenerator
 # Update the compression constants
 MAX_CHUNK_SIZE = 5000  # Increased to allow larger chunks
 MAX_TOTAL_SIZE = 20000  # Increased to allow larger total size
-try:
-    COMPRESSION_LEVEL = int(os.environ.get("SESSION_ZLIB_LEVEL", "3"))
-except ValueError:
-    COMPRESSION_LEVEL = 3
-COMPRESSION_LEVEL = max(1, min(COMPRESSION_LEVEL, 9))
-
-
-def _df_from_session_json(data):
-    """Session chunk data is a list or a JSON records string; avoid pandas literal-string read_json deprecation."""
-    if isinstance(data, list):
-        return pd.DataFrame(data)
-    if isinstance(data, str):
-        try:
-            obj = json.loads(data)
-            if isinstance(obj, list):
-                return pd.DataFrame(obj)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
-    return pd.read_json(StringIO(data), orient="records")
-
+COMPRESSION_LEVEL = 9  # Maximum compression
 
 def compress_session_data(data):
     """Compress data with improved compression and size checks"""
@@ -427,33 +306,6 @@ app.config.update(
 
 Session(app)
 
-
-@app.template_filter("pos_qty_cell")
-def _template_filter_pos_qty_cell(val):
-    """Data View: POS menu quantity — blank when zero/placeholder (DOCX uses same helper)."""
-    return normalize_pos_menu_qty_cell(val)
-
-
-# When .env was empty at server start, saving the file later did nothing until restart.
-# Reload project .env whenever its mtime changes (dev-friendly; cheap stat + rare re-read).
-_DOTENV_APPLIED_MTIME: float = -1.0
-
-
-@app.before_request
-def _reload_project_dotenv_if_updated():
-    global _DOTENV_APPLIED_MTIME
-    try:
-        p = _ENV_FILE_PRIMARY
-        if not p.is_file():
-            return
-        mtime = p.stat().st_mtime
-        if mtime != _DOTENV_APPLIED_MTIME:
-            load_env_file(p)
-            _DOTENV_APPLIED_MTIME = mtime
-    except OSError:
-        pass
-
-
 # PDF upload DB setup
 PDF_DB_PATH = 'pdf_inventory.db'
 def init_pdf_db():
@@ -613,7 +465,7 @@ def load_config():
     
     # Default configurations
     config['PATHS'] = {
-        'template_path': str(_APP_ROOT / "templates/documents/InventorySlips.docx"),
+        'template_path': os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx"),
         'output_dir': DEFAULT_SAVE_DIR,  # Use the new DEFAULT_SAVE_DIR
         'recent_files': '',
         'recent_urls': ''
@@ -732,6 +584,9 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
             status_callback("Error: No data selected.")
         return False, "No data selected."
 
+def run_full_process_inventory_slips(selected_df, config, status_callback=None, progress_callback=None):
+    # ...existing code...
+    
     try:
         # Get vendor name from first row
         vendor_name = selected_df['Vendor'].iloc[0] if not selected_df.empty else "Unknown"
@@ -752,7 +607,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         items_per_page = int(config['SETTINGS'].get('items_per_page', '4'))
         template_path = config['PATHS'].get('template_path')
         if not template_path or not os.path.exists(template_path):
-            template_path = str(_APP_ROOT / "templates/documents/InventorySlips.docx")
+            template_path = os.path.join(os.path.dirname(__file__), "templates/documents/InventorySlips.docx")
             if not os.path.exists(template_path):
                 raise ValueError(f"Template file not found at: {template_path}")
         
@@ -784,8 +639,6 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
         total_chunks = (len(cleaned_records) + items_per_page - 1) // items_per_page
         current_chunk = 0
 
-        tpl = DocxTemplate(template_path)
-
         for chunk in chunk_records(cleaned_records, items_per_page):
             current_chunk += 1
             if progress_callback:
@@ -796,6 +649,8 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                 status_callback(f"Generating page {current_chunk} of {total_chunks}...")
 
             try:
+                # Create a fresh template instance for each chunk
+                tpl = DocxTemplate(template_path)
                 context = {}
 
                 # Fill context with records - modified vendor handling
@@ -805,26 +660,15 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                     # If vendor is in format "license - name", extract just the name
                     if " - " in vendor_name:
                         vendor_name = vendor_name.split(" - ")[1]
-
-                    qty_raw = record.get("Quantity Received*", record.get("Quantity*", ""))
-                    try:
-                        qty_disp = int(float(qty_raw))
-                    except (ValueError, TypeError):
-                        qty_disp = str(qty_raw)[:20] if qty_raw is not None else ""
-
+                    
                     # Ensure all values are strings and not too long
-                    # POS = template "Old Units Remaining" (InventorySlips.docx {{LabelN.POS}})
                     context[f"Label{idx}"] = {
                         "ProductName": str(record.get("Product Name*", ""))[:100],
                         "Barcode": str(record.get("Barcode*", ""))[:50],
                         "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
-                        "QuantityReceived": qty_disp,
-                        "POS": format_old_units_remaining_for_slip(record),
+                        "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
                         "Vendor": str(vendor_name or "Unknown Vendor")[:50],
-                        "StrainName": str(record.get("Strain Name", ""))[:80],
-                        "ProductType": str(record.get("Product Type*", record.get("Inventory Type", "")))[:50],
-                        "THCContent": str(record.get("THC Content", ""))[:20],
-                        "CBDContent": str(record.get("CBD Content", ""))[:20],
+                        "ProductType": str(record.get("Product Type*", ""))[:50]
                     }
 
                 # Fill remaining slots with empty values
@@ -834,12 +678,8 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                         "Barcode": "",
                         "AcceptedDate": "",
                         "QuantityReceived": "",
-                        "POS": "",
                         "Vendor": "",
-                        "StrainName": "",
-                        "ProductType": "",
-                        "THCContent": "",
-                        "CBDContent": "",
+                        "ProductType": ""
                     }
 
                 # Render template with context
@@ -976,14 +816,10 @@ def parse_bamboo_data(json_data):
                 "Barcode*": item.get("inventory_id", "") or item.get("external_id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
-                "from_license_number": from_license_number,
-                "from_license_name": from_license_name,
                 "Strain Name": item.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
-                "Source System": "Bamboo",
-                # Cultivera/WCIA interop product id — use for exact POS / Excel alignment (same as legacy matcher).
-                "Integrator Data": str(item.get("integrator_data") or "").strip(),
+                "Source System": "Bamboo"
             })
         
         return pd.DataFrame(records)
@@ -1041,13 +877,10 @@ def parse_cultivera_data(json_data):
                 "Barcode*": item.get("barcode", "") or item.get("id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
-                "from_license_number": vendor_license,
-                "from_license_name": vendor_name,
                 "Strain Name": product.get("strain_name", ""),
                 "THC Content": thc_content,
                 "CBD Content": cbd_content,
-                "Source System": "Cultivera",
-                "Integrator Data": str(item.get("integrator_data") or "").strip(),
+                "Source System": "Cultivera"
             })
         
         return pd.DataFrame(records)
@@ -1063,9 +896,7 @@ def parse_growflow_data(json_data):
                 'from_license_name' in json_data):
             return pd.DataFrame()
         
-        from_license_number = json_data.get("from_license_number", "")
-        from_license_name = json_data.get("from_license_name", "")
-        vendor_meta = f"{from_license_number} - {from_license_name}"
+        vendor_meta = f"{json_data.get('from_license_number', '')} - {json_data.get('from_license_name', 'Unknown Vendor')}"
         raw_date = json_data.get("est_arrival_at", "") or json_data.get("transferred_at", "")
         accepted_date = raw_date.split("T")[0] if "T" in raw_date else raw_date
         
@@ -1084,8 +915,6 @@ def parse_growflow_data(json_data):
                 "Barcode*": item.get("product_sku", "") or item.get("inventory_id", ""),
                 "Accepted Date": accepted_date,
                 "Vendor": vendor_meta,
-                "from_license_number": from_license_number,
-                "from_license_name": from_license_name,
                 "Strain Name": item.get("strain_name", ""),
                 "THC Content": f"{thc_value}%",
                 "CBD Content": f"{cbd_value}%",
@@ -1604,7 +1433,10 @@ def upload_excel():
         df_json = get_chunked_data('df_json')
         if df_json:
             try:
-                json_df = _df_from_session_json(df_json)
+                if isinstance(df_json, list):
+                    json_df = pd.DataFrame(df_json)
+                else:
+                    json_df = pd.read_json(df_json, orient='records')
                 
                 if not json_df.empty and 'Vendor' in json_df.columns:
                     json_vendor = json_df['Vendor'].iloc[0] if len(json_df) > 0 else None
@@ -1859,535 +1691,6 @@ def load_from_url(url):
 
 # FIFO feature removed - endpoint and view intentionally disabled
 
-
-def _posabit_data_view_fetch_timeout_sec() -> float:
-    """Bound how long Data View (or /api/data-view/pos-matches) waits on POSaBit menu + inventory."""
-    try:
-        t = float(os.environ.get("POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC") or "40")
-        return max(15.0, min(t, 600.0))
-    except ValueError:
-        return 40.0
-
-
-def _posabit_defer_data_view_matching() -> bool:
-    """
-    When false (default), /data-view runs POS match before HTML so the table shows matches immediately.
-    When true, the page renders first and /api/data-view/pos-matches fills POS columns (better on very slow POS).
-    """
-    return (os.environ.get("POSABIT_DATA_VIEW_DEFER_MATCHING") or "false").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def _init_empty_pos_fields_on_products(products: list) -> None:
-    for p in products:
-        p["pos_description"] = ""
-        p["pos_matched"] = False
-        p["pos_match_kind"] = "none"
-        p["pos_menu_quantity"] = ""
-        p["pos_menu_quantity_raw"] = ""
-
-
-def _apply_row_selected_defaults(products: list, pos_cfg: dict, posabit_selected: str, posabit_error, posabit_match_summary: dict) -> None:
-    pos_match_ready = (
-        pos_cfg["enabled"]
-        and bool(posabit_selected)
-        and not posabit_match_summary.get("disabled")
-        and posabit_error is None
-    )
-    for p in products:
-        if not pos_match_ready:
-            p["row_selected_default"] = True
-            continue
-        # Keep every row selected by default, including when POS has no match (slips still use manifest data).
-        p["row_selected_default"] = True
-
-
-def _data_view_pos_vendor_string(row) -> str:
-    """
-    POSaBit import_vendor: use ``Vendor`` together with per-row ``from_license_*`` when present.
-    Manifest sender is the same identity whether it appears only in ``Vendor`` or only under
-    ``from_license_name`` / ``from_license_number``.
-    """
-    v = str(row.get("Vendor", "") or row.get("vendor", "") or "").strip()
-    lnum = str(row.get("from_license_number", "") or "").strip()
-    lname = str(row.get("from_license_name", "") or "").strip()
-    lic_meta = f"{lnum} - {lname}".strip(" -").strip() if (lnum or lname) else ""
-
-    def norm(s: str) -> str:
-        return re.sub(r"\s+", " ", (s or "").lower()).strip()
-
-    if not lic_meta:
-        return v or "Unknown"
-    if not v or v.lower() in ("unknown", "unknown vendor"):
-        return lic_meta
-    if norm(v) == norm(lic_meta) or norm(lic_meta) in norm(v) or norm(v) in norm(lic_meta):
-        return v
-    return f"{v} {lic_meta}".strip()
-
-
-def _excel_products_for_data_view(df) -> list:
-    excel_products = []
-    excel_df_json = get_chunked_data("excel_df")
-    if not excel_df_json or not session.get("has_excel_data"):
-        return excel_products
-    try:
-        excel_df = _df_from_session_json(excel_df_json)
-        for i, (idx, row) in enumerate(excel_df.iterrows()):
-            try:
-                pid = int(len(df)) + int(idx)
-            except (TypeError, ValueError):
-                pid = int(len(df)) + i
-            excel_products.append(
-                {
-                    "id": pid,
-                    "name": str(row.get("product_name", "")),
-                    "strain": str(row.get("strain_name", "")),
-                    "sku": str(row.get("sku", "") or row.get("barcode", "")),
-                    "quantity": str(row.get("quantity", "0")),
-                    "source": "Excel Upload",
-                    "vendor": _data_view_pos_vendor_string(row),
-                    "manifest_id": str(row.get("sku", "N/A")),
-                    "accepted_date": str(row.get("accepted_date", "N/A")),
-                    "type": str(row.get("product_type", "Unknown")),
-                    "cost": float(row.get("price", 0)) if "price" in row else 0,
-                    "brand": str(row.get("brand", "")),
-                    "weight": str(row.get("weight", "")),
-                    "weight_unit": str(row.get("weight_unit", "")),
-                    "product_shorthand": str(
-                        row.get("Integrator Data", "")
-                        or row.get("integrator_data", "")
-                        or row.get("product_shorthand", "")
-                        or ""
-                    ).strip(),
-                }
-            )
-    except Exception as e:
-        logger.error("Excel merge for Data View failed: %s", e)
-    return excel_products
-
-
-def _main_json_products_for_data_view(df, format_type):
-    products = []
-    for idx, row in df.iterrows():
-        try:
-            pid = int(idx)
-        except (TypeError, ValueError):
-            pid = len(products)
-        products.append(
-            {
-                "id": pid,
-                "name": str(row.get("Product Name*", "")),
-                "strain": str(row.get("Strain Name", "")),
-                "sku": str(row.get("Barcode*", "")),
-                "quantity": str(row.get("Quantity Received*", "")),
-                "source": format_type or "Unknown",
-                "vendor": _data_view_pos_vendor_string(row),
-                "manifest_id": str(row.get("Barcode*", "N/A")),
-                "accepted_date": str(row.get("Accepted Date", "N/A")),
-                "type": str(row.get("Product Type*", "Unknown")),
-                "cost": float(row.get("Cost", 0)) if "Cost" in row else 0,
-                "product_shorthand": str(
-                    row.get("Integrator Data", "")
-                    or row.get("integrator_data", "")
-                    or row.get("Product Shorthand*", "")
-                    or ""
-                ).strip(),
-            }
-        )
-    return products
-
-
-def _assemble_data_view_products(df, format_type) -> list:
-    products = _main_json_products_for_data_view(df, format_type)
-    products.extend(_excel_products_for_data_view(df))
-    return products
-
-
-def _strict_integrator_pos_matching() -> bool:
-    """
-    When true (default), if the manifest row has ``Integrator Data`` / ``product_shorthand``,
-    POS name-fuzzy matching is skipped when that code does not hit the menu (avoids wrong
-    ``Pure - Live Resin …`` lines colliding). Barcode/SKU match is still tried as a last exact step.
-    """
-    return (os.environ.get("POSABIT_MATCH_STRICT_IF_INTEGRATOR_CODE") or "1").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def _perform_pos_matching_on_products(products: list, pos_cfg: dict, posabit_selected: str):
-    """Returns (menu_rows, posabit_error_or_none, posabit_match_summary). Mutates ``products`` in place."""
-    posabit_menu_rows: list = []
-    posabit_error = None
-    posabit_match_summary = {"matched": 0, "unmatched": 0, "disabled": False}
-    venue = next(
-        (v for v in (pos_cfg.get("venues") or []) if v["id"] == posabit_selected),
-        (pos_cfg.get("venues") or [None])[0],
-    )
-    cache_key = f"{venue['feed_key'][:8]}:{venue['id']}"
-    try:
-        timeout_sec = _posabit_data_view_fetch_timeout_sec()
-
-        def _fetch_pos_menu_rows():
-            return get_menu_rows_cached(
-                pos_cfg["api_base"],
-                pos_cfg["token"],
-                venue["feed_key"],
-                cache_key,
-                for_data_view=True,
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_fetch_pos_menu_rows)
-            posabit_menu_rows = fut.result(timeout=timeout_sec)
-        norm_map, norm_qty, norm_keys, norm_to_row = build_match_index(posabit_menu_rows)
-        strict_ic = _strict_integrator_pos_matching()
-        for p in products:
-            ok = False
-            disp = None
-            kind = "none"
-            mq = ""
-            sh = str(p.get("product_shorthand") or "").strip()
-            iv = str(p.get("vendor") or "")
-            pt = str(p.get("type") or "")
-
-            if sh:
-                ok, disp, kind, mq = find_pos_menu_match(
-                    sh,
-                    norm_map,
-                    norm_qty,
-                    norm_keys,
-                    import_vendor=iv,
-                    import_product_type=pt,
-                    norm_to_row=norm_to_row,
-                    skip_compatibility=True,
-                )
-                if ok:
-                    kind = f"integrator:{kind}"
-
-            if not ok and not (sh and strict_ic):
-                ok, disp, kind, mq = find_pos_menu_match(
-                    p.get("name") or "",
-                    norm_map,
-                    norm_qty,
-                    norm_keys,
-                    import_vendor=iv,
-                    import_product_type=pt,
-                    norm_to_row=norm_to_row,
-                )
-
-            if not ok and not (sh and strict_ic):
-                sku_val = p.get("sku")
-                if sku_val is not None and str(sku_val).strip():
-                    ok, disp, kind, mq = find_pos_menu_match(
-                        str(sku_val).strip(),
-                        norm_map,
-                        norm_qty,
-                        norm_keys,
-                        import_vendor=iv,
-                        import_product_type=pt,
-                        norm_to_row=norm_to_row,
-                        skip_compatibility=True,
-                    )
-                    if ok:
-                        kind = f"sku:{kind}"
-
-            if not ok and sh and strict_ic:
-                sku_val = p.get("sku")
-                if sku_val is not None and str(sku_val).strip():
-                    ok, disp, kind, mq = find_pos_menu_match(
-                        str(sku_val).strip(),
-                        norm_map,
-                        norm_qty,
-                        norm_keys,
-                        import_vendor=iv,
-                        import_product_type=pt,
-                        norm_to_row=norm_to_row,
-                        skip_compatibility=True,
-                    )
-                    if ok:
-                        kind = f"sku:{kind}"
-
-            p["pos_description"] = (disp or "") if ok else ""
-            p["pos_matched"] = bool(ok)
-            p["pos_match_kind"] = kind
-            raw_mq = ""
-            if ok and mq is not None and str(mq).strip() != "":
-                raw_mq = str(mq).strip()
-            p["pos_menu_quantity_raw"] = raw_mq
-            p["pos_menu_quantity"] = normalize_pos_menu_qty_cell(mq) if ok else ""
-            if ok:
-                posabit_match_summary["matched"] += 1
-            else:
-                posabit_match_summary["unmatched"] += 1
-    except concurrent.futures.TimeoutError:
-        logger.warning(
-            "POSaBit fetch exceeded %.0fs (POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC); deferred client may retry.",
-            timeout_sec,
-        )
-        posabit_error = (
-            f"POSaBit did not finish within {timeout_sec:.0f}s (menu and optional inventory). "
-            "Increase POSABIT_DATA_VIEW_FETCH_TIMEOUT_SEC or POSABIT_REQUEST_TIMEOUT in .env, "
-            "or set POSABIT_FALLBACK_TO_VENUE_INVENTORY=0 if inventory paging is slow."
-        )
-        posabit_menu_rows = []
-        _init_empty_pos_fields_on_products(products)
-        posabit_match_summary["unmatched"] = len(products)
-    except Exception as e:
-        logger.warning("POSaBit menu fetch failed: %s", e, exc_info=True)
-        posabit_error = str(e)
-        posabit_menu_rows = []
-        _init_empty_pos_fields_on_products(products)
-        posabit_match_summary["unmatched"] = len(products)
-
-    return posabit_menu_rows, posabit_error, posabit_match_summary
-
-
-def _session_df_fingerprint(df_json_str: Optional[str]) -> str:
-    """Stable short id for the current session dataset (for POS qty cache invalidation)."""
-    if not df_json_str:
-        return ""
-    return hashlib.blake2s(df_json_str.encode("utf-8"), digest_size=16).hexdigest()
-
-
-def _pos_qty_cache_key_for_index(idx) -> str:
-    try:
-        return str(int(idx))
-    except (TypeError, ValueError):
-        return str(idx)
-
-
-def _persist_pos_qty_to_session(products: list, venue_id: str, df_json_str: Optional[str]) -> None:
-    """Store POS menu qty per Data View row id so slip generation can skip a menu refetch."""
-    fp = _session_df_fingerprint(df_json_str or "")
-    if not fp or not products:
-        return
-    venue = (venue_id or "").strip().lower()
-    new_pairs = {
-        _pos_qty_cache_key_for_index(p["id"]): normalize_pos_menu_qty_cell(p.get("pos_menu_quantity"))
-        for p in products
-    }
-    new_raw = {
-        _pos_qty_cache_key_for_index(p["id"]): str(p.get("pos_menu_quantity_raw") or "").strip()
-        for p in products
-    }
-    prev_fp = session.get("pos_qty_cache_fp")
-    prev_venue = session.get("pos_qty_cache_venue", "")
-    if prev_fp == fp and prev_venue == venue and session.get("pos_qty_by_index"):
-        merged = dict(session["pos_qty_by_index"])
-        merged.update(new_pairs)
-        by_id = merged
-        merged_raw = dict(session.get("pos_qty_raw_by_index") or {})
-        merged_raw.update(new_raw)
-        by_raw = merged_raw
-    else:
-        by_id = new_pairs
-        by_raw = new_raw
-    session["pos_qty_by_index"] = by_id
-    session["pos_qty_raw_by_index"] = by_raw
-    session["pos_qty_cache_fp"] = fp
-    session["pos_qty_cache_venue"] = venue
-    logger.info("POS qty session cache updated (%d keys, fp=%s…)", len(by_id), fp[:12])
-
-
-def _clear_pos_qty_session_cache() -> None:
-    session.pop("pos_qty_by_index", None)
-    session.pop("pos_qty_raw_by_index", None)
-    session.pop("pos_qty_cache_fp", None)
-    session.pop("pos_qty_cache_venue", None)
-
-
-def _try_pos_qty_from_session_cache(selected_df, venue_id: str, df_json_str: Optional[str]):
-    """If Data View already computed POS matches for this dataset + venue, reuse (no API)."""
-    fp = _session_df_fingerprint(df_json_str or "")
-    venue = (venue_id or "").strip().lower()
-    if (
-        not fp
-        or not venue
-        or session.get("pos_qty_cache_fp") != fp
-        or session.get("pos_qty_cache_venue", "") != venue
-    ):
-        return None
-    cache = session.get("pos_qty_by_index") or {}
-    if not cache:
-        return None
-    cache_raw = session.get("pos_qty_raw_by_index") or {}
-    col = []
-    col_raw = []
-    for idx in selected_df.index:
-        key = _pos_qty_cache_key_for_index(idx)
-        if key not in cache:
-            return None
-        col.append(cache[key])
-        col_raw.append(str(cache_raw.get(key) or "").strip())
-    if len(col) != len(selected_df):
-        return None
-    logger.info(
-        "POS qty for generation: using session cache (%d rows, fp=%s…); skipping menu fetch.",
-        len(col),
-        fp[:12],
-    )
-    out = selected_df.copy()
-    out["POS Quantity"] = col
-    out["POS Quantity Raw"] = col_raw
-    return out
-
-
-def _inject_pos_quantity_for_generation(selected_df):
-    """Add 'POS Quantity' column to selected_df for DOCX merge fields (best-effort)."""
-    try:
-        if selected_df is None or selected_df.empty:
-            return selected_df
-        pos_cfg = posabit_config_from_env()
-        venues = pos_cfg.get("venues") or []
-        if not pos_cfg.get("enabled") or not venues:
-            selected_df["POS Quantity"] = ""
-            selected_df["POS Quantity Raw"] = ""
-            return selected_df
-        posabit_selected = (session.get("posabit_venue") or "").strip().lower()
-        if posabit_selected and not any(v["id"] == posabit_selected for v in venues):
-            posabit_selected = ""
-        if not posabit_selected:
-            posabit_selected = venues[0]["id"]
-
-        raw = get_chunked_data("df_json")
-        cached = _try_pos_qty_from_session_cache(selected_df, posabit_selected, raw)
-        if cached is not None:
-            return cached
-
-        products = []
-        for i, (_, row) in enumerate(selected_df.iterrows()):
-            products.append(
-                {
-                    "id": i,
-                    "name": str(row.get("Product Name*", "")),
-                    "sku": str(row.get("Barcode*", "")),
-                    "quantity": str(row.get("Quantity Received*", "")),
-                    "vendor": _data_view_pos_vendor_string(row),
-                    "type": str(row.get("Product Type*", "Unknown")),
-                    "product_shorthand": str(
-                        row.get("Integrator Data", "")
-                        or row.get("integrator_data", "")
-                        or row.get("Product Shorthand*", "")
-                        or ""
-                    ).strip(),
-                }
-            )
-        _init_empty_pos_fields_on_products(products)
-        _, _, _ = _perform_pos_matching_on_products(products, pos_cfg, posabit_selected)
-        pos_qty = [normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")) for p in products]
-        pos_raw = [str(p.get("pos_menu_quantity_raw") or "").strip() for p in products]
-        selected_df = selected_df.copy()
-        selected_df["POS Quantity"] = pos_qty
-        selected_df["POS Quantity Raw"] = pos_raw
-        # Align cache keys with Data View (dataframe index labels) for next generation.
-        sync_products = []
-        for p, (idx, _) in zip(products, selected_df.iterrows()):
-            sync_products.append(
-                {
-                    "id": idx,
-                    "pos_menu_quantity": normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")),
-                    "pos_menu_quantity_raw": str(p.get("pos_menu_quantity_raw") or "").strip(),
-                }
-            )
-        _persist_pos_qty_to_session(sync_products, posabit_selected, raw)
-        return selected_df
-    except Exception as e:
-        logger.warning("POS quantity enrichment for generation failed: %s", e, exc_info=True)
-        selected_df["POS Quantity"] = ""
-        selected_df["POS Quantity Raw"] = ""
-        return selected_df
-
-
-@app.route("/api/data-view/pos-matches", methods=["GET"])
-def api_data_view_pos_matches():
-    """Loads POS catalog + fills match fields after the shell page has rendered."""
-    df_json = get_chunked_data("df_json")
-    format_type = session.get("format_type")
-    if df_json is None:
-        return jsonify({"success": False, "error": "no_data", "message": "Load data first."}), 400
-    try:
-        df = _df_from_session_json(df_json)
-    except Exception:
-        return jsonify({"success": False, "error": "bad_data"}), 400
-
-    products = _assemble_data_view_products(df, format_type)
-    pos_cfg = posabit_config_from_env()
-    posabit_venues = pos_cfg.get("venues") or []
-    arg_venue = (request.args.get("venue") or "").strip().lower()
-    if arg_venue and any(v["id"] == arg_venue for v in posabit_venues):
-        session["posabit_venue"] = arg_venue
-    posabit_selected = (session.get("posabit_venue") or "").strip().lower()
-    if posabit_selected and not any(v["id"] == posabit_selected for v in posabit_venues):
-        posabit_selected = ""
-    if not posabit_selected and posabit_venues:
-        posabit_selected = posabit_venues[0]["id"]
-        session["posabit_venue"] = posabit_selected
-
-    if not pos_cfg.get("enabled") or not posabit_selected:
-        _clear_pos_qty_session_cache()
-        rows = [
-            {
-                "id": int(p["id"]),
-                "pos_description": "",
-                "pos_matched": False,
-                "pos_match_kind": "disabled",
-                "pos_menu_quantity": "",
-                "row_selected_default": True,
-            }
-            for p in products
-        ]
-        return jsonify(
-            {
-                "success": True,
-                "pos_disabled": True,
-                "summary": {"matched": 0, "unmatched": len(products), "disabled": True},
-                "menu_rows": 0,
-                "error": None,
-                "rows": rows,
-            }
-        )
-
-    _init_empty_pos_fields_on_products(products)
-    menu_rows, pos_err, summary = _perform_pos_matching_on_products(products, pos_cfg, posabit_selected)
-    _apply_row_selected_defaults(products, pos_cfg, posabit_selected, pos_err, summary)
-
-    out_rows = [
-        {
-            "id": int(p["id"]),
-            "pos_description": p.get("pos_description") or "",
-            "pos_matched": bool(p.get("pos_matched")),
-            "pos_match_kind": p.get("pos_match_kind") or "none",
-            "pos_menu_quantity": normalize_pos_menu_qty_cell(p.get("pos_menu_quantity")),
-            "row_selected_default": bool(p.get("row_selected_default", True)),
-        }
-        for p in products
-    ]
-    try:
-        update_session_activity()
-    except Exception as e:
-        logger.warning("session activity ping on pos-matches api: %s", e)
-
-    _persist_pos_qty_to_session(products, posabit_selected, df_json)
-
-    return jsonify(
-        {
-            "success": True,
-            "pos_disabled": False,
-            "summary": summary,
-            "menu_rows": len(menu_rows),
-            "error": pos_err,
-            "rows": out_rows,
-        }
-    )
-
-
 @app.route('/data-view')
 def data_view():
     try:
@@ -2400,13 +1703,21 @@ def data_view():
             return redirect(url_for('index'))
 
         try:
-            df = _df_from_session_json(df_json)
+            if isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
             return redirect(url_for('index'))
         
-        logger.debug("DataFrame shape: %s columns: %s", df.shape, df.columns.tolist())
+        # Debug logging
+        logger.info(f"DataFrame shape: {df.shape}")
+        logger.info(f"DataFrame columns: {df.columns.tolist()}")
+        if not df.empty:
+            logger.info(f"First row data: {df.iloc[0].to_dict()}")
+            logger.info(f"First row keys: {list(df.iloc[0].keys())}")
         
         # Extract transfer information from the DataFrame (first row)
         transfer_info = {
@@ -2417,58 +1728,80 @@ def data_view():
         
         if not df.empty:
             first_row = df.iloc[0]
+            logger.info(f"Extracting from first row: {first_row.to_dict()}")
+            
+            # Use the exact column names that exist in the data
             if 'Vendor' in first_row:
                 transfer_info['vendor'] = str(first_row['Vendor'])
+                logger.info(f"Vendor: {transfer_info['vendor']}")
+            
             if 'Barcode*' in first_row:
                 transfer_info['manifest_id'] = str(first_row['Barcode*'])
+                logger.info(f"Manifest ID (Barcode): {transfer_info['manifest_id']}")
+            
             if 'Accepted Date' in first_row:
                 transfer_info['accepted_date'] = str(first_row['Accepted Date'])
-        logger.debug("transfer_info: %s", transfer_info)
-
-        products = _assemble_data_view_products(df, format_type)
-
-        # POSaBit: default is inline match on this route (immediate table). Set POSABIT_DATA_VIEW_DEFER_MATCHING=true
-        # to load menu via /api/data-view/pos-matches after first paint instead.
-        pos_cfg = posabit_config_from_env()
-        posabit_venues = pos_cfg.get('venues') or []
-        arg_venue = (request.args.get('venue') or '').strip().lower()
-        if arg_venue and any(v['id'] == arg_venue for v in posabit_venues):
-            session['posabit_venue'] = arg_venue
-        posabit_selected = (session.get('posabit_venue') or '').strip().lower()
-        if posabit_selected and not any(v['id'] == posabit_selected for v in posabit_venues):
-            posabit_selected = ''
-        if not posabit_selected and posabit_venues:
-            posabit_selected = posabit_venues[0]['id']
-            session['posabit_venue'] = posabit_selected
-        posabit_menu_rows: list = []
-        posabit_error = None
-        posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': True}
-        posabit_loading = False
-
-        if pos_cfg['enabled'] and posabit_selected:
-            if _posabit_defer_data_view_matching():
-                posabit_loading = True
-                posabit_match_summary = {'matched': 0, 'unmatched': len(products), 'disabled': False}
-                _init_empty_pos_fields_on_products(products)
-                for p in products:
-                    p['row_selected_default'] = True
-            else:
-                posabit_match_summary['disabled'] = False
-                posabit_menu_rows, posabit_error, posabit_match_summary = _perform_pos_matching_on_products(
-                    products, pos_cfg, posabit_selected
-                )
-                _apply_row_selected_defaults(
-                    products, pos_cfg, posabit_selected, posabit_error, posabit_match_summary
-                )
-        else:
-            for p in products:
-                p['pos_description'] = ''
-                p['pos_matched'] = False
-                p['pos_match_kind'] = 'disabled'
-                p['pos_menu_quantity'] = ''
-            _apply_row_selected_defaults(
-                products, pos_cfg, posabit_selected or '', posabit_error, {'disabled': True}
-            )
+                logger.info(f"Accepted Date: {transfer_info['accepted_date']}")
+        
+        logger.info(f"Final transfer info: {transfer_info}")
+        
+        # Check if there's Excel data to merge
+        excel_df_json = get_chunked_data('excel_df')
+        excel_products = []
+        
+        if excel_df_json and session.get('has_excel_data'):
+            try:
+                if isinstance(excel_df_json, list):
+                    excel_df = pd.DataFrame(excel_df_json)
+                else:
+                    excel_df = pd.read_json(excel_df_json, orient='records')
+                
+                logger.info(f"Found Excel data with {len(excel_df)} products")
+                
+                # Convert Excel data to product format
+                for idx, row in excel_df.iterrows():
+                    product = {
+                        'id': len(df) + idx,  # Offset ID to avoid conflicts
+                        'name': str(row.get('product_name', '')),
+                        'strain': str(row.get('strain_name', '')),
+                        'sku': str(row.get('sku', '') or row.get('barcode', '')),
+                        'quantity': str(row.get('quantity', '0')),
+                        'source': 'Excel Upload',
+                        'vendor': str(row.get('vendor', 'Unknown')),
+                        'manifest_id': str(row.get('sku', 'N/A')),
+                        'accepted_date': str(row.get('accepted_date', 'N/A')),
+                        'type': str(row.get('product_type', 'Unknown')),
+                        'cost': float(row.get('price', 0)) if 'price' in row else 0,
+                        'brand': str(row.get('brand', '')),
+                        'weight': str(row.get('weight', '')),
+                        'weight_unit': str(row.get('weight_unit', ''))
+                    }
+                    excel_products.append(product)
+                
+                logger.info(f"Added {len(excel_products)} products from Excel")
+            except Exception as e:
+                logger.error(f"Error processing Excel data for display: {e}")
+        
+        # Format data for template
+        products = []
+        for idx, row in df.iterrows():
+            product = {
+                'id': idx,
+                'name': str(row.get('Product Name*', '')),
+                'strain': str(row.get('Strain Name', '')),
+                'sku': str(row.get('Barcode*', '')),
+                'quantity': str(row.get('Quantity Received*', '')),
+                'source': format_type or 'Unknown',
+                'vendor': str(row.get('Vendor', 'Unknown')),
+                'manifest_id': str(row.get('Barcode*', 'N/A')),
+                'accepted_date': str(row.get('Accepted Date', 'N/A')),
+                'type': str(row.get('Product Type*', 'Unknown')),
+                'cost': float(row.get('Cost', 0)) if 'Cost' in row else 0
+            }
+            products.append(product)
+        
+        # Merge Excel products with JSON products
+        products.extend(excel_products)
 
         # Smart grouping by similar product terms, then alphabetical
         def create_smart_groups(products):
@@ -2545,20 +1878,7 @@ def data_view():
             
             return sorted_groups
 
-        show_pos_menu_order = (
-            pos_cfg['enabled']
-            and posabit_selected
-            and not posabit_match_summary.get('disabled')
-            and not posabit_loading
-        )
-        if show_pos_menu_order:
-            matched_products = [p for p in products if p.get('pos_matched')]
-            unmatched_products = [p for p in products if not p.get('pos_matched')]
-            sorted_groups = create_smart_groups(matched_products) + create_smart_groups(
-                unmatched_products
-            )
-        else:
-            sorted_groups = create_smart_groups(products)
+        sorted_groups = create_smart_groups(products)
 
         # Load configuration
         config = load_config()
@@ -2569,9 +1889,6 @@ def data_view():
         except Exception as e:
             logger.warning(f"Failed to update session activity on data_view: {e}")
 
-        if pos_cfg.get("enabled") and posabit_selected and not posabit_loading and products:
-            _persist_pos_qty_to_session(products, posabit_selected, get_chunked_data("df_json"))
-
         return render_template(
             'data_view.html',
             groups=sorted_groups,
@@ -2579,16 +1896,7 @@ def data_view():
             theme=config['SETTINGS'].get('theme', 'dark'),
             version=APP_VERSION,
             vendor=transfer_info['vendor'],
-            order_date=transfer_info['accepted_date'],
-            posabit_enabled=pos_cfg['enabled'],
-            posabit_disabled_reasons=pos_cfg.get('disabled_reasons') or [],
-            posabit_env_file=str(_ENV_FILE_PRIMARY),
-            posabit_venues=posabit_venues,
-            posabit_selected_venue=posabit_selected,
-            posabit_menu_rows=posabit_menu_rows,
-            posabit_error=posabit_error,
-            posabit_match_summary=posabit_match_summary,
-            posabit_loading=posabit_loading,
+            order_date=transfer_info['accepted_date']
         )
     except Exception as e:
         logger.error(f'Error in data_view: {str(e)}', exc_info=True)
@@ -2648,7 +1956,10 @@ def generate_slips():
         
         # Convert JSON to DataFrame
         try:
-            df = _df_from_session_json(df_json)
+            if isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             return jsonify({
@@ -2670,7 +1981,6 @@ def generate_slips():
         # Get only selected rows
         selected_df = df.iloc[selected_indices].copy()
         logger.info(f"Selected DataFrame shape: {selected_df.shape}")
-        selected_df = _inject_pos_quantity_for_generation(selected_df)
         
         # Load configuration
         config = load_config()
@@ -2763,7 +2073,10 @@ def generate_robust_slips_docx():
         
         # Convert JSON to DataFrame
         try:
-            df = _df_from_session_json(df_json)
+            if isinstance(df_json, list):
+                df = pd.DataFrame(df_json)
+            else:
+                df = pd.read_json(df_json, orient='records')
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -3349,8 +2662,7 @@ def clear_data():
         # Clear all chunked data
         for key in ['df_json', 'raw_json']:
             clear_chunked_data(key)
-        _clear_pos_qty_session_cache()
-
+        
         # Clear other session data
         session.pop('format_type', None)
         
@@ -3397,17 +2709,6 @@ if __name__ == '__main__':
     try:
         # Clean up any temporary files from previous runs
         cleanup_temp_files()
-
-        # Bind: default 0.0.0.0 so 127.0.0.1 works even when "localhost" would hit IPv6-only issues.
-        # If FLASK_DEV_HOST is set, use it for both bind and the auto-opened browser URL (legacy).
-        # Otherwise FLASK_DEV_BIND + FLASK_DEV_BROWSER_HOST (browser defaults to 127.0.0.1).
-        _legacy = (os.environ.get('FLASK_DEV_HOST') or '').strip()
-        if _legacy:
-            _bind_host = _legacy
-            _browser_host = _legacy
-        else:
-            _bind_host = (os.environ.get('FLASK_DEV_BIND') or '0.0.0.0').strip() or '0.0.0.0'
-            _browser_host = (os.environ.get('FLASK_DEV_BROWSER_HOST') or '127.0.0.1').strip() or '127.0.0.1'
         
         # Try different ports in case default is taken
         ports = [8000, 8001, 8080, 8081, 8888, 9000]
@@ -3416,8 +2717,8 @@ if __name__ == '__main__':
             try:
                 print(f"Attempting to start server on port {port}...")
                 
-                # Open browser with more reliable method (default arg binds loop port at def time)
-                def open_browser(bind_port=port):
+                # Open browser with more reliable method
+                def open_browser():
                     try:
                         # Try Chrome first with --new-window flag
                         chrome_path = ''
@@ -3426,7 +2727,7 @@ if __name__ == '__main__':
                         elif sys.platform == "win32":  # Windows
                             chrome_path = 'C:/Program Files/Google/Chrome/Application/chrome.exe %s'
                         
-                        url = f'http://{_browser_host}:{bind_port}'
+                        url = f'http://localhost:{port}'
                         
                         # Add Chrome flags to handle authentication issues
                         chrome_flags = [
@@ -3462,21 +2763,16 @@ if __name__ == '__main__':
                     except Exception as e:
                         print(f"Error opening browser: {e}")
                         # Fallback to default browser
-                        webbrowser.open(f'http://{_browser_host}:{bind_port}', new=2)
+                        webbrowser.open(f'http://localhost:{port}', new=2)
 
                 # Delay browser opening slightly
                 threading.Timer(2.0, open_browser).start()
-                print(
-                    f"\n  Local app: http://{_browser_host}:{port}/\n"
-                    f"  (listening on {_bind_host}:{port}; use that URL if the site cannot be reached)\n",
-                    flush=True,
-                )
+                
                 app.run(
-                    host=_bind_host,
+                    host='localhost',
                     port=port,
                     debug=True,
-                    use_reloader=False,  # Prevent duplicate browser windows
-                    threaded=True,  # Don’t block the dev server while one tab waits on POSaBit
+                    use_reloader=False  # Prevent duplicate browser windows
                 )
                 break  # If server starts successfully, break the loop
                 
