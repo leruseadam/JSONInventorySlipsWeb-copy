@@ -38,6 +38,9 @@ class InventorySlipPDFTests(unittest.TestCase):
             base64.a85decode(encoded_stream, adobe=True)
         )
         self.assertIn(f"({barcode}) Tj".encode("ascii"), content_stream)
+        self.assertIn(b"Old Units Remaining:", content_stream)
+        self.assertIn(b"Qty. Issued:", content_stream)
+        self.assertIn(b"General Restock?", content_stream)
 
     def test_pdf_endpoint_returns_pdf_without_format_field(self):
         selected_records = [{
