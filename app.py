@@ -153,6 +153,11 @@ def compress_session_data(data):
         logger.error(f"Compression error: {str(e)}")
         return None
 
+def dataframe_from_records_json(data):
+    """Rebuild records without pandas coercing identifier strings to numbers."""
+    records = json.loads(data) if isinstance(data, str) else data
+    return pd.DataFrame(records)
+
 def get_chunked_data(key):
     """Retrieve chunked data with improved error handling"""
     from src.utils.session_storage import get_data
@@ -664,7 +669,7 @@ def run_full_process_inventory_slips(selected_df, config, status_callback=None, 
                     # Ensure all values are strings and not too long
                     context[f"Label{idx}"] = {
                         "ProductName": str(record.get("Product Name*", ""))[:100],
-                        "Barcode": str(record.get("Barcode*", ""))[:50],
+                        "Barcode": str(record.get("Barcode*", "")),
                         "AcceptedDate": str(record.get("Accepted Date", ""))[:20],
                         "QuantityReceived": str(record.get("Quantity Received*", ""))[:20],
                         "Vendor": str(vendor_name or "Unknown Vendor")[:50],
@@ -1022,6 +1027,11 @@ def process_csv_data(df):
         logger.info(f"Column mapping: {new_columns}")
         df = df.rename(columns=new_columns)
         logger.info(f"Columns after renaming: {df.columns.tolist()}")
+
+        if "Barcode*" in df.columns:
+            df["Barcode*"] = df["Barcode*"].map(
+                lambda value: "" if pd.isna(value) else str(value)
+            )
         
         # Ensure required columns exist
         required_cols = ["Product Name*", "Barcode*"]
@@ -1284,7 +1294,7 @@ def create_robust_inventory_slip(selected_df, config, status_callback=None):
             row_cells = table.add_row().cells
             data = [
                 str(row.get('Product Name*', ''))[:100],
-                str(row.get('Barcode*', ''))[:50],
+                str(row.get('Barcode*', '')),
                 str(row.get('Quantity Received*', ''))[:5],
                 str(row.get('Vendor', ''))[:20],
                 str(row.get('Accepted Date', ''))[:10]
@@ -1358,7 +1368,7 @@ def upload_csv():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         try:
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(filepath, dtype=str)
             processed_df, msg = process_csv_data(df)
             if processed_df is None:
                 flash(msg)
@@ -1436,7 +1446,7 @@ def upload_excel():
                 if isinstance(df_json, list):
                     json_df = pd.DataFrame(df_json)
                 else:
-                    json_df = pd.read_json(df_json, orient='records')
+                    json_df = dataframe_from_records_json(df_json)
                 
                 if not json_df.empty and 'Vendor' in json_df.columns:
                     json_vendor = json_df['Vendor'].iloc[0] if len(json_df) > 0 else None
@@ -1621,7 +1631,7 @@ def load_from_url(url):
                 else:
                     raise ValueError("Unknown JSON structure")
             elif 'text/csv' in content_type or url.lower().endswith('.csv'):
-                df = pd.read_csv(response.raw)
+                df = pd.read_csv(response.raw, dtype=str)
                 df, msg = process_csv_data(df)
                 return df, 'CSV', None
             else:
@@ -1639,7 +1649,7 @@ def load_from_url(url):
                         raise ValueError("Unknown JSON structure")
                 except Exception:
                     try:
-                        df = pd.read_csv(response.raw)
+                        df = pd.read_csv(response.raw, dtype=str)
                         df, msg = process_csv_data(df)
                         return df, 'CSV', None
                     except Exception as e:
@@ -1706,7 +1716,7 @@ def data_view():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                df = dataframe_from_records_json(df_json)
         except Exception as e:
             logger.error(f"Error parsing JSON data: {str(e)}")
             flash('Error loading data. Please try again.')
@@ -1754,7 +1764,7 @@ def data_view():
                 if isinstance(excel_df_json, list):
                     excel_df = pd.DataFrame(excel_df_json)
                 else:
-                    excel_df = pd.read_json(excel_df_json, orient='records')
+                    excel_df = dataframe_from_records_json(excel_df_json)
                 
                 logger.info(f"Found Excel data with {len(excel_df)} products")
                 
@@ -1959,7 +1969,7 @@ def generate_slips():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                df = dataframe_from_records_json(df_json)
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             return jsonify({
@@ -2076,7 +2086,7 @@ def generate_robust_slips_docx():
             if isinstance(df_json, list):
                 df = pd.DataFrame(df_json)
             else:
-                df = pd.read_json(df_json, orient='records')
+                df = dataframe_from_records_json(df_json)
         except Exception as e:
             logger.error(f"Error converting JSON to DataFrame: {str(e)}")
             flash('Error loading data. Please try again.')
