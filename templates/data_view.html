@@ -87,6 +87,10 @@
                   title="Generate inventory slips for selected products">
             <i class="fas fa-file-word" aria-hidden="true"></i> Generate Inventory Slips
           </button>
+          <button class="btn btn-danger btn-lg me-3" onclick="generateSlips('pdf')"
+              title="Download inventory slips as a PDF">
+            <i class="fas fa-file-pdf" aria-hidden="true"></i> Generate PDF Slips
+          </button>
           <button class="btn btn-info btn-lg" onclick="generateRobustSlips()" 
                   title="Generate Order Sheets (more reliable)">
             <i class="fas fa-file-alt" aria-hidden="true"></i> Generate Order Sheet
@@ -435,7 +439,7 @@ function updateProgress(percent, text, phaseIndex=1) {
     }
 }
 
-function generateSlips() {
+function generateSlips(outputFormat = 'docx') {
     ensureProgressModalReady();
     console.debug('generateSlips: starting - progressModal?', !!progressModal);
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
@@ -481,6 +485,7 @@ function generateSlips() {
     selectedProducts.forEach(productId => {
         formData.append('selected_indices[]', productId);
     });
+    formData.append('output_format', outputFormat);
 
     updateProgress(25, 'Submitting request', 1);
     fetch('{{ url_for("generate_slips") }}', {
@@ -515,7 +520,7 @@ function generateSlips() {
         
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = 'inventory_slips.docx';
+        let filename = outputFormat === 'pdf' ? 'inventory_slips.pdf' : 'inventory_slips.docx';
         if (contentDisposition) {
             const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
             if (filenameMatch && filenameMatch[1]) {

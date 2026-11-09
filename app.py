@@ -86,6 +86,7 @@ import sqlite3
 # Local imports
 from src.utils.document_handler import DocumentHandler
 from src.ui.app import InventorySlipGenerator
+from src.utils.pdf_generator import generate_inventory_slips_pdf
 
 # Configure logging (must be before any logger usage)
 logging.basicConfig(level=logging.INFO, 
@@ -1953,6 +1954,12 @@ def generate_slips():
             }), 400
             
         logger.info(f"Selected indices: {selected_indices}")
+        output_format = request.form.get('output_format', 'docx').lower()
+        if output_format not in {'docx', 'pdf'}:
+            return jsonify({
+                'success': False,
+                'message': 'Unsupported output format.'
+            }), 400
         
         # Load data from session using chunked data
         df_json = get_chunked_data('df_json')
@@ -1982,7 +1989,7 @@ def generate_slips():
         logger.info(f"DataFrame columns: {df.columns.tolist()}")
         
         # Validate selected indices
-        if max(selected_indices) >= len(df):
+        if min(selected_indices) < 0 or max(selected_indices) >= len(df):
             return jsonify({
                 'success': False,
                 'message': 'Invalid product selection - some selected items no longer exist.'
@@ -1994,6 +2001,18 @@ def generate_slips():
         
         # Load configuration
         config = load_config()
+
+        if output_format == 'pdf':
+            pdf_path = generate_inventory_slips_pdf(
+                selected_df,
+                config['PATHS']['output_dir']
+            )
+            return send_file(
+                pdf_path,
+                as_attachment=True,
+                download_name=os.path.basename(pdf_path),
+                mimetype='application/pdf'
+            )
         
         # Generate the file
         status_messages = []
