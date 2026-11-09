@@ -1,6 +1,8 @@
+import base64
 import json
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 import pandas as pd
@@ -28,9 +30,15 @@ class InventorySlipPDFTests(unittest.TestCase):
 
         self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
         self.assertTrue(pdf_bytes.rstrip().endswith(b"%%EOF"))
-        self.assertIn(f"({barcode}) Tj".encode("ascii"), pdf_bytes)
+        stream_start = pdf_bytes.index(b"\nstream\n") + len(b"\nstream\n")
+        stream_end = pdf_bytes.index(b"endstream", stream_start)
+        encoded_stream = pdf_bytes[stream_start:stream_end].strip()
+        content_stream = zlib.decompress(
+            base64.a85decode(encoded_stream, adobe=True)
+        )
+        self.assertIn(f"({barcode}) Tj".encode("ascii"), content_stream)
 
-    def test_generate_slips_route_returns_pdf_when_requested(self):
+    def test_pdf_endpoint_returns_pdf_without_format_field(self):
         selected_records = [{
             "Product Name*": "Test product",
             "Barcode*": "001234567890",
@@ -51,8 +59,8 @@ class InventorySlipPDFTests(unittest.TestCase):
                 patch.object(app_module, "load_config", return_value=config),
             ):
                 response = app_module.app.test_client().post(
-                    "/generate-slips",
-                    data={"selected_indices[]": "0", "output_format": "pdf"},
+                    "/generate-slips-pdf",
+                    data={"selected_indices[]": "0"},
                 )
                 response_data = response.data
                 response_mimetype = response.mimetype

@@ -195,7 +195,7 @@
                             <h4 class="fw-semibold mb-2 tracking-tight" style="letter-spacing:.5px;">
                                 <span class="text-gradient">Generating Inventory Slips</span>
                             </h4>
-                            <p class="text-muted mb-0 small">Optimizing layout, adjusting fonts, building document…</p>
+                            <p id="generationMessage" class="text-muted mb-0 small">Optimizing layout, adjusting fonts, building document…</p>
                         </div>
                         <div class="progress soft-progress mb-3" style="height: 1.1rem;">
                             <div id="mainProgressBar" class="progress-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
@@ -236,6 +236,7 @@
                regardless of page scroll or stacking context. This overrides
                Bootstrap's dialog placement when necessary and ensures the
                splash is always visible. */
+            #progressModal.show { z-index: 2060 !important; }
             #progressModal .modal-dialog {
                 position: fixed !important;
                 top: 50% !important;
@@ -248,7 +249,15 @@
             /* Ensure the backdrop sits just below the dialog */
             .modal-backdrop.show { z-index: 2050 !important; }
             /* Make the fallback overlay higher than backdrop but below dialog if needed */
-            #generationOverlay { z-index:2040; }
+            #generationOverlay { z-index:2060; }
+            .progress-bar.progress-indeterminate {
+                width: 35% !important;
+                animation: progressIndeterminate 1.25s ease-in-out infinite;
+            }
+            @keyframes progressIndeterminate {
+                from { transform: translateX(-120%); }
+                to { transform: translateX(300%); }
+            }
         </style>
         <!-- Minimal overlay fallback (always available) -->
         <div id="generationOverlay" style="display:none; position:fixed; inset:0; z-index:1060; background:rgba(10,12,24,.72); backdrop-filter:blur(8px) saturate(120%); -webkit-backdrop-filter:blur(8px) saturate(120%);">
@@ -261,7 +270,6 @@
 
 {% block extra_js %}
 <script>
-let progressModal;
 let mainProgressBarEl, progressPhaseEl, progressPercentEl, statusChecklistEl;
 let progressBar;
 let progressText;
@@ -276,12 +284,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (modalEl.parentElement !== document.body) {
                 console.debug('Appending progressModal to document.body to avoid stacking context issues');
                 document.body.appendChild(modalEl);
-            }
-            try {
-                progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
-                console.debug('Bootstrap modal instance created', progressModal);
-            } catch (err) {
-                console.warn('Bootstrap modal initialization failed:', err);
             }
         }
     } catch (e) { /* ignore */ }
@@ -338,13 +340,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Ensure modal and references are ready when user clicks generate
 function ensureProgressModalReady() {
-    if (!progressModal) {
-        const modalEl = document.getElementById('progressModal');
-        if (modalEl) {
-            progressModal = bootstrap.Modal.getOrCreateInstance(modalEl);
-            console.debug('ensureProgressModalReady: created modal instance');
-        }
-    }
     if (!mainProgressBarEl) mainProgressBarEl = document.getElementById('mainProgressBar');
     if (!progressPhaseEl) progressPhaseEl = document.getElementById('progressPhase');
     if (!progressPercentEl) progressPercentEl = document.getElementById('progressPercent');
@@ -354,27 +349,31 @@ function ensureProgressModalReady() {
 function forceShowModal() {
     const modalEl = document.getElementById('progressModal');
     if (!modalEl) return;
-    console.debug('forceShowModal: forcing display of modal element');
     modalEl.classList.add('show');
     modalEl.style.display = 'block';
+    modalEl.style.position = 'fixed';
+    modalEl.style.inset = '0';
+    modalEl.style.zIndex = '2060';
+    modalEl.style.overflowY = 'auto';
     modalEl.removeAttribute('aria-hidden');
     modalEl.setAttribute('aria-modal', 'true');
-    // add backdrop
-    if (!document.querySelector('.modal-backdrop')) {
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    if (!backdrops.length) {
         const bd = document.createElement('div');
         bd.className = 'modal-backdrop fade show';
+        bd.style.cssText = 'position:fixed;inset:0;z-index:2050;background:rgba(10,12,24,.72);';
         document.body.appendChild(bd);
     }
+    document.body.classList.add('modal-open');
 }
 function forceHideModal() {
     const modalEl = document.getElementById('progressModal');
     if (!modalEl) return;
-    console.debug('forceHideModal: hiding modal element');
     modalEl.classList.remove('show');
     modalEl.style.display = 'none';
     modalEl.setAttribute('aria-hidden', 'true');
-    const bd = document.querySelector('.modal-backdrop');
-    if (bd) bd.remove();
+    document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
+    document.body.classList.remove('modal-open');
 }
     
 function selectAll() {
@@ -439,9 +438,8 @@ function updateProgress(percent, text, phaseIndex=1) {
     }
 }
 
-function generateSlips(outputFormat = 'docx') {
+async function generateSlips(outputFormat = 'docx') {
     ensureProgressModalReady();
-    console.debug('generateSlips: starting - progressModal?', !!progressModal);
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
 
@@ -450,25 +448,16 @@ function generateSlips(outputFormat = 'docx') {
         return;
     }
 
-    if (progressModal) {
-        try { console.debug('Calling progressModal.show()'); progressModal.show(); console.debug('progressModal.show() called'); } catch(e) { console.warn('progressModal.show() failed:', e); forceShowModal(); }
-    } else { forceShowModal(); }
-    // Guard: if still not visible in 100ms, force show
-    setTimeout(() => {
-        const modalEl = document.getElementById('progressModal');
-        if (modalEl && modalEl.style.display !== 'block') {
-            forceShowModal();
-        }
-    }, 100);
-    if (progressModal) {
-        try { progressModal.show(); } catch(e) { forceShowModal(); }
-    } else { forceShowModal(); }
-    setTimeout(() => {
-        const modalEl = document.getElementById('progressModal');
-        if (modalEl && modalEl.style.display !== 'block') {
-            forceShowModal();
-        }
-    }, 100);
+    forceShowModal();
+    const generationMessage = document.getElementById('generationMessage');
+    if (generationMessage) {
+        generationMessage.textContent = outputFormat === 'pdf'
+            ? 'Building your PDF slips… please wait.'
+            : 'Optimizing layout, adjusting fonts, building document…';
+    }
+    if (progressBar) {
+        progressBar.classList.toggle('progress-indeterminate', outputFormat === 'pdf');
+    }
     updateProgress(2, 'Collecting products', 1);
     const cancelBtn = document.getElementById('cancelGenerationBtn');
     if (cancelBtn) {
@@ -476,7 +465,7 @@ function generateSlips(outputFormat = 'docx') {
         cancelBtn.disabled = false;
         cancelBtn.onclick = function() {
             // For now just hide modal; true cancellation would require backend job management
-            if (progressModal) progressModal.hide();
+            forceHideModal();
         };
     }
 
@@ -487,8 +476,13 @@ function generateSlips(outputFormat = 'docx') {
     });
     formData.append('output_format', outputFormat);
 
-    updateProgress(25, 'Submitting request', 1);
-    fetch('{{ url_for("generate_slips") }}', {
+    // Let the browser paint the splash before starting the request/build work.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    updateProgress(25, outputFormat === 'pdf' ? 'Generating PDF slips…' : 'Submitting request', 1);
+    const generationEndpoint = outputFormat === 'pdf'
+        ? '{{ url_for("generate_slips_pdf") }}'
+        : '{{ url_for("generate_slips") }}';
+    fetch(generationEndpoint, {
         method: 'POST',
         body: formData
     })
@@ -498,7 +492,6 @@ function generateSlips(outputFormat = 'docx') {
         // Check for timeout/session expired
         if (response.status === 440) {
             return response.json().then(function(data) {
-                if (progressModal) { try { progressModal.hide(); } catch(e){} }
                 forceHideModal();
                 // Show timeout message and redirect
                 const message = data.message || 'Your session has expired. Please refresh the page and reupload your data.';
@@ -517,6 +510,11 @@ function generateSlips(outputFormat = 'docx') {
                 throw new Error(errorData.message || 'Network response was not ok');
             });
         }
+        const responseType = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (outputFormat === 'pdf' && !responseType.includes('application/pdf')) {
+            throw new Error('The server did not return a PDF. Please restart/redeploy the updated app and try again.');
+        }
+        if (progressBar) progressBar.classList.remove('progress-indeterminate');
         
         // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
@@ -542,13 +540,11 @@ function generateSlips(outputFormat = 'docx') {
         a.click();
         window.URL.revokeObjectURL(url);
         setTimeout(function() {
-            if (progressModal) {
-                progressModal.hide();
-            }
+            forceHideModal();
         }, 1000);
     })
     .catch(function(error) {
-        if (progressModal) { try { progressModal.hide(); } catch(e){} }
+        if (progressBar) progressBar.classList.remove('progress-indeterminate');
         forceHideModal();
         console.error('generateSlips: caught error', error);
         if (error.message !== 'Session timeout') {
@@ -559,6 +555,9 @@ function generateSlips(outputFormat = 'docx') {
 
 function generateRobustSlips() {
     ensureProgressModalReady();
+    const generationMessage = document.getElementById('generationMessage');
+    if (generationMessage) generationMessage.textContent = 'Building your Order Sheet… please wait.';
+    if (progressBar) progressBar.classList.remove('progress-indeterminate');
     const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked'))
         .map(checkbox => checkbox.value);
 
@@ -567,9 +566,7 @@ function generateRobustSlips() {
         return;
     }
 
-    if (progressModal) {
-        progressModal.show();
-    }
+    forceShowModal();
     updateProgress(0, 'Starting Order Sheet generation...');
 
     // Create form data
@@ -586,9 +583,7 @@ function generateRobustSlips() {
         // Check for timeout/session expired
         if (response.status === 440) {
             return response.json().then(function(data) {
-                if (progressModal) {
-                    progressModal.hide();
-                }
+                forceHideModal();
                 // Show timeout message and redirect
                 const message = data.message || 'Your session has expired. Please refresh the page and reupload your data.';
                 alert(message);
@@ -632,12 +627,10 @@ function generateRobustSlips() {
         a.click();
         window.URL.revokeObjectURL(url);
         setTimeout(function() {
-            if (progressModal) { try { progressModal.hide(); } catch(e){} }
             forceHideModal();
         }, 1000);
     })
     .catch(function(error) {
-        if (progressModal) { try { progressModal.hide(); } catch(e){} }
         forceHideModal();
         if (error.message !== 'Session timeout') {
             alert('Error generating Order Sheet: ' + error.message);

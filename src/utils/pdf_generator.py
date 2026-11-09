@@ -123,7 +123,7 @@ def generate_inventory_slips_pdf(selected_df, output_dir):
     card_width = (PAGE_WIDTH - 2 * margin_x - gap_x) / 2
     card_height = (PAGE_HEIGHT - 2 * margin_y - gap_y) / 2
 
-    pdf = canvas.Canvas(output_path, pagesize=letter, pageCompression=0)
+    pdf = canvas.Canvas(output_path, pagesize=letter, pageCompression=1)
     records = selected_df.to_dict(orient="records")
 
     for start in range(0, len(records), CARDS_PER_PAGE):

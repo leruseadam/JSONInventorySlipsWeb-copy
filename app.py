@@ -1915,6 +1915,7 @@ def data_view():
         return redirect(url_for('index'))
 
 @app.route('/generate-slips', methods=['POST'])
+@app.route('/generate-slips-pdf', methods=['POST'], endpoint='generate_slips_pdf')
 def generate_slips():
     """Generate inventory slips using the original template-based method"""
     try:
@@ -1954,7 +1955,10 @@ def generate_slips():
             }), 400
             
         logger.info(f"Selected indices: {selected_indices}")
-        output_format = request.form.get('output_format', 'docx').lower()
+        output_format = (
+            'pdf' if request.path == '/generate-slips-pdf'
+            else request.form.get('output_format', 'docx').lower()
+        )
         if output_format not in {'docx', 'pdf'}:
             return jsonify({
                 'success': False,
