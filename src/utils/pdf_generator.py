@@ -3,14 +3,19 @@
 import os
 from datetime import datetime
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfbase.pdfmetrics import stringWidth
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import simpleSplit
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import simpleSplit
+    _REPORTLAB_IMPORT_ERROR = None
+except ImportError as exc:
+    colors = letter = stringWidth = canvas = simpleSplit = None
+    _REPORTLAB_IMPORT_ERROR = exc
 
 
-PAGE_WIDTH, PAGE_HEIGHT = letter
+PAGE_WIDTH, PAGE_HEIGHT = (letter if letter is not None else (612, 792))
 CARDS_PER_PAGE = 4
 
 
@@ -109,6 +114,12 @@ def _draw_slip(pdf, record, x, y, width, height):
 
 def generate_inventory_slips_pdf(selected_df, output_dir):
     """Write selected inventory records to a four-slip-per-page PDF."""
+    if _REPORTLAB_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "PDF generation is unavailable because ReportLab is not installed. "
+            "Install the project dependencies in the web app's virtualenv and reload it."
+        ) from _REPORTLAB_IMPORT_ERROR
+
     if selected_df is None or selected_df.empty:
         raise ValueError("No products selected.")
 

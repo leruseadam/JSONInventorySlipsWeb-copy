@@ -2007,10 +2007,17 @@ def generate_slips():
         config = load_config()
 
         if output_format == 'pdf':
-            pdf_path = generate_inventory_slips_pdf(
-                selected_df,
-                config['PATHS']['output_dir']
-            )
+            try:
+                pdf_path = generate_inventory_slips_pdf(
+                    selected_df,
+                    config['PATHS']['output_dir']
+                )
+            except RuntimeError as e:
+                logger.error(f"PDF generation unavailable: {e}")
+                return jsonify({
+                    'success': False,
+                    'message': str(e)
+                }), 503
             return send_file(
                 pdf_path,
                 as_attachment=True,

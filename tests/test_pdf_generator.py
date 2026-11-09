@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import app as app_module
+import src.utils.pdf_generator as pdf_generator
 from src.utils.pdf_generator import generate_inventory_slips_pdf
 
 
@@ -71,6 +72,38 @@ class InventorySlipPDFTests(unittest.TestCase):
         self.assertEqual(response_mimetype, "application/pdf")
         self.assertTrue(response_data.startswith(b"%PDF-"))
         self.assertIn(".pdf", content_disposition)
+
+    def test_missing_reportlab_does_not_break_site_startup(self):
+        client = app_module.app.test_client()
+        with patch.object(pdf_generator, "_REPORTLAB_IMPORT_ERROR", ImportError("missing")):
+            homepage = client.get("/")
+            self.assertEqual(homepage.status_code, 200)
+
+            with tempfile.TemporaryDirectory() as output_dir:
+                with (
+                    patch.object(app_module, "is_session_valid", return_value=True),
+                    patch.object(
+                        app_module,
+                        "get_chunked_data",
+                        return_value=json.dumps([{
+                            "Product Name*": "Test product",
+                            "Barcode*": "001234567890",
+                        }]),
+                    ),
+                    patch.object(app_module, "update_session_activity"),
+                    patch.object(
+                        app_module,
+                        "load_config",
+                        return_value={"PATHS": {"output_dir": output_dir}},
+                    ),
+                ):
+                    pdf_response = client.post(
+                        "/generate-slips-pdf",
+                        data={"selected_indices[]": "0"},
+                    )
+
+        self.assertEqual(pdf_response.status_code, 503)
+        self.assertIn(b"ReportLab is not installed", pdf_response.data)
 
 
 if __name__ == "__main__":
